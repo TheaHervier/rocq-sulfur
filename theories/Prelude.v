@@ -1,7 +1,7 @@
 From Stdlib Require Export Bool Nat List String Morphisms Relations Program.Equality Lia.
 From Ltac2 Require Export Ltac2.
 From Equations Require Export Equations.
-From Utils Require Export Fin Vector.
+From Utils Require Export Fin Vector Functor Generalities.
 Export ListNotations VectorNotations.
 
 #[export] Set Equations Transparent.
