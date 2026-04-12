@@ -9,7 +9,6 @@ Context {sig : signature}.
   #[local] Reserved Notation "'mterm'" (at level 0).
   #[local] Reserved Notation "'marg' ty" (at level 0, ty at level 0).
   #[local] Reserved Notation "'margs' tys" (at level 0, tys at level 0).
-  #[local] Reserved Notation "'msubst' s" (at level 0).
 
   #[local] Notation "'term'" := (P.expr Kt) (at level 0).
   #[local] Notation "'arg' ty" := (P.expr (Ka ty)) (at level 0, ty at level 0).
@@ -45,16 +44,41 @@ Context {sig : signature}.
     M_aterm scope : mterm scope -> marg AT_term scope
   | (** Bind a term in an argument. *)
     M_abind scope {ty} : marg ty (S scope) -> marg (AT_bind ty) scope
-  | (** Meta variable applyed to a substitution ; might want to change that to only finite substitutions, but maybe by using the identity substitution it can work ? **)
-    M_mvar scope :
-      mvar -> msubst scope -> mterm scope
-
-  (* Parametrize the meta variables by an arity or a function, something that immediately says "it has n variables that we substitute" *)
+  | (**
+    Meta variable applyed to a substitution
+    A substitution should be finite if we want to preserve scopeness.
+    The problem is that functions from integers are nice to use, and that substitutions in [ParamSyntax] are infinite.
+    In order to not do complicated conversions, we use the following data :
+      - A family [scopes] of scopes, such that [scopes i] is the scope of the [ith] term of the substitution
+      - A proof saying that all [lscope k] first elements of the substitution are of scope [scope]
+      - The substitutionn that is a function from natural numbers
+    **)
+    M_mvar scope (k : mvar) :
+      (* For every index of the substitution, gives a scope *)
+      forall scopes : nat -> nat,
+      (forall i, i < lscope k -> scopes i = scope) ->
+      (forall i, mterm (scopes i)) -> mterm scope
 
   where "'mterm'" := (mexpr Kt)
     and "'marg' ty" := (mexpr (Ka ty))
-    and "'margs' tys" := (mexpr (Kal tys))
-    and "'msubst' s" := (nat -> mterm s).
+    and "'margs' tys" := (mexpr (Kal tys)).
+
+  (* A meta substitution can be described by the following data: *)
+  Record msubst {k s} := {
+    (**
+      - k is the number of variables that will be substituted
+      - s is the scope of the substitution
+      When used, the type of the substitution is not important, only the objects matter
+    **)
+    scopes : nat -> nat;
+    Hscopes :
+      forall i : nat, i < k -> scopes i = s;
+    ms :
+      forall i : nat, mterm (scopes i)
+  }.
+  Arguments msubst : clear implicits.
+
+  (* We currify [msubst]s in [mexpr] so that it is easier to use when proving things on [mexpr]. The tradeoff is that it is slightly heavier when defining a concrete syntax (which in any case, should not be done by hand). *)
 
   Section ExprInd.
     Context (P : forall k s, mexpr k s -> Prop).
@@ -67,9 +91,9 @@ Context {sig : signature}.
     Context (H_abase : forall s b x, P _ _ (M_abase s b x)).
     Context (H_aterm : forall s t, P _ _ t -> P _ _ (M_aterm s t)).
     Context (H_abind : forall s ty (a : marg ty _), P _ _ a -> P _ _ (M_abind s a)).
-    Context (H_mvar : forall s k σ,
+    Context (H_mvar : forall s k I HI σ,
       (forall i, i < lscope k -> P _ _ (σ i)) ->
-      P _ _ (M_mvar s k σ)
+      P _ _ (M_mvar s k I HI σ)
     ).
 
     Fixpoint mexpr_ind k s (t : mexpr k s) {struct t} : P k s t.
@@ -88,19 +112,55 @@ Context {sig : signature}.
   End ExprInd.
 
   (** Some basic [msubsts] (i.e. substitutions for meta terms) **)
-  (** TODO **)
   (**
-    Identity substitution of meta terms, scoped by [s]. We do not depend on the number [l] of substituted variables:
-    - If [l < s], then we describe the substitution on more variables than useful: it is not a problem
-    - If [s <= l], then there is a problem in what we want to define: the identity substitution is not what we want
-
-    But, if s = 0, then we have a problem... The type [msubst 0] might be empty because [mterm 0] might be...
+    Identity substitution of [k] meta terms, scoped by [k].
   **)
-  (* Definition msid (s : nat) : msubst s.
-  Proof.
-    intro i. destruct (i <? s) eqn:Hi.
-    - eapply M_var. apply PeanoNat.Nat.ltb_lt. apply Hi.
-    -  *)
+  Program Definition msid (k : nat) : msubst k k := {|
+    scopes := fun i => if i <? k then k else S i;
+    ms := fun i => M_var _ i _
+  |}.
+  Next Obligation.
+    (* All of the interesting terms are scoped by k *)
+    apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
+  Qed.
+  Next Obligation.
+    (* All the terms (here, variables) are well scoped by [scopes] *)
+    destruct (i <? k) eqn:Hi.
+    apply PeanoNat.Nat.ltb_lt. assumption.
+    lia.
+  Qed.
+
+  (**
+    Shift a substitution
+  **)
+  Program Definition mscons {k s : nat} (t : mterm s) (σ : msubst k s) : msubst (S k) s := {|
+    scopes := fun i => match i with
+    | 0 => s
+    | S i => (σ.(scopes) i)
+    end;
+
+    ms := fun i => match i with
+    | 0 => t
+    | S i => σ.(ms) i
+    end
+  |}.
+  Next Obligation.
+    destruct i as [|i]. reflexivity.
+    apply Hscopes. lia.
+  Qed.
+
+  (* Some useful meta variables *)
+  Program Definition scoped_mvar (name : nat) (s : nat) : mterm s :=
+    M_mvar s {|index:=name;lscope:=s|} (msid s).(scopes) _ (msid s).(ms).
+  Next Obligation.
+    apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
+  Qed.
+
+  Program Definition one_subst (name : nat) (t : mterm 0) :=
+    M_mvar 0 {|index:=name;lscope:= 1|} (mscons t (msid 0)).(scopes) _ (mscons t (msid 0)).(ms).
+  Next Obligation.
+    destruct i. reflexivity. lia.
+  Qed.
 
   (*********************************************************************************)
   (** *** Evaluation of a meta term *)
@@ -120,7 +180,7 @@ Context {sig : signature}.
   eval m (M_abind _ a) :=
     (* We don't shift anything ; it is dealt with when evaluating a meta variable *)
     E_abind (eval m a);
-  eval m (M_mvar _ k σ) := substitute
+  eval m (M_mvar _ k _ _ σ) := substitute
     (fun i =>
       if i<?lscope k then
         eval m (σ i)
@@ -129,7 +189,7 @@ Context {sig : signature}.
         (* [+ s] takes into account the scope, "the number of lambdas we are under" *)
         E_var (i - lscope k + s)
     ) (m k).
-  Locate "=₁".
+  (* Locate "=₁". *)
   #[export] Instance eval_proper_inst {k s} :
     Proper (eq1 ==> eq ==> eq) (@eval s k).
     intros m m' Hm t' t Ht. subst.
@@ -174,8 +234,9 @@ Context {sig : signature}.
       + rewrite up_rens_lt.
         (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
         2: apply PeanoNat.Nat.ltb_lt; assumption.
-        rewrite Hi. rewrite H. reflexivity.
-        apply PeanoNat.Nat.ltb_lt; assumption.
+        rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
+        erewrite <- HI. 2: apply Hi. rewrite H.
+        reflexivity. assumption.
       + rewrite PeanoNat.Nat.ltb_ge in Hi.
         rewrite up_rens_gt. 2: lia.
         match goal with
@@ -204,7 +265,7 @@ Context {sig : signature}.
   (* [mctx scope len] *)
   | mnil {scope : nat} : mctx scope 0
   | mcons {scope n : nat}
-    (t : mterm (scope+n)) (Γ : mctx scope n) :
+    (t : mterm (n+scope)) (Γ : mctx scope n) :
     mctx scope (S n).
   Definition ctx := list term.
 
@@ -493,6 +554,15 @@ Context {sig : signature}.
     - unfold rename_jdg, fmap, FMapProd, fmap, FMapId.
       constructor. eapply rename_in. apply H. assumption.
   Qed.
+
+  Corollary weaken_typing Γ j A :
+    Γ ⊢ j ->
+    A::Γ ⊢ rename_jdg rshift j.
+  Proof.
+    intro.
+    eapply preserve_renaming. apply H.
+    apply weaken_rtyping. apply id_rtyping.
+  Qed.
 End WithSignature.
 Notation "Γ ∋ n : A" := (inctx Γ n A) (at level 70, n at level 50).
 Notation "Γ ⊢( s ) j" := (@proof _ s Γ j) (at level 70).
@@ -554,110 +624,162 @@ Section LambdaPi.
   Definition Var {s} (n : nat) (Hs : n < s) : mterm s :=
   @M_var sig_lp s n Hs.
 
-  (* Some common meta variables *)
-  Definition A : mvar := {|index:=0;lscope:=0|}.
-  Definition B : mvar := {|index:=1;lscope:=1|}.
-  Definition f : mvar := {|index:=2;lscope:=1|}.
-  Definition u : mvar := {|index:=3;lscope:=0|}.
-  Definition b : mvar := {|index:=4;lscope:=0|}.
+  Definition nA := 0.
+  Definition nB := 1.
+  Definition nf := 2.
+  Definition nu := 3.
+  Definition nb := 4.
+
+  Notation A := (scoped_mvar nA 0).
+  Notation B := (scoped_mvar nB 1).
+  Notation f := (scoped_mvar nf 0).
+  Notation u := (scoped_mvar nu 0).
+  Notation "'Bu'" := (one_subst nB u).
+  Notation b := (scoped_mvar nb 1).
+
+  Lemma B_Bu_mvar :
+    forall k k' scopes scopes' Hs Hs' s s',
+    B = @M_mvar sig_lp 1 k scopes Hs s ->
+    Bu = @M_mvar sig_lp 0 k' scopes' Hs' s' ->
+    k = k'.
+  Proof.
+    intros.
+    inversion H. inversion H0. reflexivity.
+  Qed.
 
   (* Typing rules *)
 
   Definition tType : rule :=
   {|
     premises := fun _ => [];
-    conclusion := fun u => (T u, T (S u))
+    conclusion := fun n => (T n, T (S n))
   |}.
 
   (* Need to have something cleaner for msubst *)
-  Fail Definition tPi : rule :=
+  Definition tPi : rule :=
   {|
-    premises := fun '(u, v) =>
+    premises := fun '(n, m) =>
     [
       prem_ind
         mnil
-        (M_mvar 0 A (fun n => M_var n), T u) ;
+        (A, T n) ;
       prem_ind
-        (mcons (M_mvar 0 A default_menv) mnil)
-        (M_mvar 0 B default_menv, T v)
+        (mcons(n:=0) A mnil)
+        (B, T m)
     ] ;
-    conclusion := fun '(u, v) =>
-      (Pi (M_mvar 0 A default_menv) (M_mvar 0 B default_menv), T (Nat.max u v))
+    conclusion := fun '(n, m) =>
+      (Pi A B, T (Nat.max n m))
   |}.
 
-  (*
-  Definition tPi : rule :=
-  {|
-    premises:= fun '(u, v) =>
-    [
-      prem_ind [] (A, T u);
-      prem_ind [A] (B, T v)
-    ];
-    conclusion:= fun '(u, v) =>
-      (Pi A B, T (Nat.max u v))
-  |}.
   Definition tApp : rule :=
   {|
-    premises:= fun (_ : unit) =>
-      [
-        prem_ind [] (f, Pi A B);
-        prem_ind [] (u, A)
-      ];
-    conclusion:= fun _ =>
-      (App f u, M_subst (mscons u msid) B)
+    premises := fun (_ : unit) =>
+    [
+      prem_ind
+        mnil
+        (f, Pi A B);
+      prem_ind
+        mnil
+        (u, A)
+    ];
+    conclusion := fun _ =>
+      (App f u, Bu)
   |}.
+
   Definition tLam : rule :=
   {|
-    premises:= fun (_ : unit) => [
-      prem_ind [A] (b, B)
+    premises := fun (_ : unit) =>
+    [
+      prem_ind
+        (mcons(n:=0) A mnil)
+        (b, B)
     ];
     conclusion := fun _ =>
       (lambda b, Pi A B)
   |}.
 
-  Definition typ_lambpi : @jdg_sig sig_lp := {|
-    rules := [
-      tType;
-      tVar;
-      tPi;
-      tApp;
-      tLam
-    ]
-  |}.
+  Definition typ_lampi : jdg_sig := {|rules:=[
+    tType; tPi; tApp; tLam
+  ]|}.
 
   (* Overwrite notations for lambda pi *)
-  Notation "Γ ⊢ j" := (@proof _ typ_lambpi Γ j) (at level 70).
+  Notation "Γ ⊢ j" := (@proof _ typ_lampi Γ j) (at level 70).
   Notation "Δ ⊢r ρ : Γ" := (@rtyping sig_lp Δ ρ Γ) (at level 70, ρ at level 50).
-  Notation "Δ ⊢s σ : Γ" := (@styping _ typ_lambpi Δ σ Γ) (at level 70, σ at level 50).
+  Notation "Δ ⊢s σ : Γ" := (@styping _ typ_lampi Δ σ Γ) (at level 70, σ at level 50).
 
-  (* It is absolutely horrible to use, obviously *)
+  (*It is absolutely horrible to use, obviously *)
   Definition elambda (t : P.expr Kt) : P.expr Kt :=
   @E_ctor sig_lp CLam (
     E_al_cons (E_abind (E_aterm t)) E_al_nil
   ).
-  (* Lemma proof_type_id u :
-    [] ⊢ (elambda (@E_var 0), Pi (T u) (T u)).
-  Proof.
-    eapply conv_proof.
-    unshelve econstructor. exact tLam. repeat split. shelve. shelve. shelve.
-    4: {
-      simpl. reflexivity.
-    }
-    - repeat (try (left; reflexivity); right).
-    - intros. inversion H.
-      + inversion H0; subst.
-        simpl. clear H H0.
-        eapply conv_proof.
-        unshelve econstructor. exact tVar. simpl. split; shelve.
-        repeat (try (left; reflexivity); right).
-        3: {
-          simpl. reflexivity.
-        }
-        intros. inversion H. inversion H0. inversion H0.
-        intros. inversion H. 2: {inversion H0. }
-        inversion H0; subst. constructor.
-      + inversion H0.
-    - intros. inversion H. inversion H0. inversion H0.
-  Qed. *) *)
+  Definition ePi (A B : P.expr Kt) : P.expr Kt :=
+  @E_ctor sig_lp CPi (
+    E_al_cons (E_aterm A) (E_al_cons (E_abind (E_aterm B)) E_al_nil)
+  ).
+  Definition eT (u : nat) : P.expr Kt :=
+  @E_ctor sig_lp CType (
+    E_al_cons (@E_abase sig_lp Nat u) E_al_nil
+  ).
+  Definition eApp (f u : P.expr Kt) : P.expr Kt :=
+  @E_ctor sig_lp CApp (
+    E_al_cons (E_aterm f) (E_al_cons (E_aterm u) E_al_nil)
+  ).
 
+  Ltac destruct_n H :=
+  simpl in H;
+  match type of H with
+  | False => destruct H
+  | or _ _ => destruct H as [H|H]; [destruct_n H|destruct_n H]
+  | _ => idtac
+  end.
+
+  Lemma proof_type_id n :
+    [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(index)=?nb) then (E_var 0)
+      else if (k.(index)=?nA) then (eT n)
+      else if (k.(index)=?nB) then (eT n)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
+    3: reflexivity.
+    - intros. destruct_n H.
+      inversion H; subst. clean_existT. clear H.
+      simpl. unfold fmap, FMapId. simpl.
+      constructor. constructor.
+    - intros. destruct_n H. inversion H.
+  Qed.
+
+  Lemma proof_type_id_app n :
+    [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (eT n)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(index)=?nf) then (elambda (E_var 0))
+      else if (k.(index)=?nu) then (E_var 0)
+      else if (k.(index)=?nA) then (eT n)
+      else if (k.(index)=?nB) then (eT n)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
+    3: reflexivity.
+    - intros. destruct_n H.
+      + inversion H. clean_existT. clean_existT. clear H.
+        simpl. unfold fmap, FMapId. simpl.
+        epose (weaken_typing []).
+        match goal with | |- _ ⊢ ?j =>
+        specialize (p j)
+        end.
+        simpl in p. unfold fmap, FMapId in p. simpl in p.
+        apply p. clear p.
+        apply proof_type_id.
+      + inversion H. clean_existT. clean_existT. clear H.
+        simpl. unfold fmap, FMapId. simpl. constructor.
+        constructor.
+    - intros. destruct_n H. inversion H. inversion H.
+  Qed.
 End LambdaPi.

@@ -3,6 +3,8 @@ From Ltac2 Require Export Ltac2.
 From Equations Require Export Equations.
 From Utils Require Export Fin Vector Functor Generalities.
 Export ListNotations VectorNotations.
+Require Export Stdlib.Logic.ProofIrrelevance.
+
 
 #[export] Set Equations Transparent.
 
@@ -28,6 +30,14 @@ Ltac split6 := split ; [|split5].
 Ltac split7 := split ; [|split6].
 Ltac split8 := split ; [|split7].
 
+(** Destruct n-ary disjunctions.  *)
+Ltac destruct_n H :=
+  match H with
+  | False => destruct H
+  | _ \/ _ => destruct H as [H|H]; [destruct_n H|destruct_n H]
+  | _ => idtac
+  end.
+
 (** On a hypothesis of the form [H : A -> B], this generates two goals:
     - the first asks to prove [A].
     - the second asks to prove the original goal in a context where [H : A]. *)
@@ -41,3 +51,14 @@ Ltac feed H :=
 Ltac feed2 H := feed H ; [| feed H].
 Ltac feed3 H := feed H ; [| feed2 H].
 Ltac feed4 H := feed H ; [| feed3 H].
+
+(** Get equalities from equality of [existT] *)
+Ltac clean_existT :=
+repeat (try
+match goal with
+| _H : existT _ _ _ = existT _ _ _ |- _ =>
+apply inj_pair2 in _H
+end
+); subst.
+(* Uses proof irrelevance... *)
+(* Print Assumptions inj_pair2. *)
