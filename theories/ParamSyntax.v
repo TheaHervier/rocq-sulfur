@@ -259,6 +259,9 @@ Proof. reflexivity. Qed.
 Lemma sshift_scons (t : term) (s : subst) : scomp sshift (scons t s) =₁ s.
 Proof. reflexivity. Qed.
 
+Lemma scomp_rscomp (s s' : subst) (r : ren) : scomp (rscomp r s) s' =₁ rscomp r (scomp s s').
+Proof. reflexivity. Qed.
+
 Lemma rcomp_rid_l (r : ren) : rcomp rid r =₁ r.
 Proof. reflexivity. Qed.
 

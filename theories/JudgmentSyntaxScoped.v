@@ -300,6 +300,44 @@ Context {sig : signature}.
       apply up_rens_add.
   Qed.
 
+  Equations up_substs (k : nat) (σ : subst) : subst :=
+  up_substs 0 σ := σ ;
+  up_substs (S k) σ := up_subst (up_substs k σ).
+
+  Lemma up_substs_lt (i k : nat) (σ : subst) :
+    i < k -> up_substs k σ i = E_var i.
+  Proof.
+    intro. induction k in i, H |- *; simpl.
+    - lia.
+    - destruct i as [|i]. simpl. reflexivity.
+      simpl. unfold srcomp, rshift. rewrite IHk. reflexivity. lia.
+  Qed.
+
+  Lemma up_substs_gt (i k : nat) (σ : subst) :
+    i >= k -> up_substs k σ i = rename (fun i => i + k) (σ (i - k)).
+  Proof.
+    induction k in i |- *; intros; simpl.
+    - transitivity (σ (i - 0)).
+      assert (i = i - 0) by lia. rewrite H0 at 1. reflexivity.
+      etransitivity. symmetry. apply ren_rid.
+      apply rename_proper. 2: reflexivity. intro. unfold rid. lia.
+    - destruct i as [|i]; simpl. lia.
+      unfold srcomp, rshift. rewrite IHk. 2: lia.
+      rewrite ren_ren. apply rename_proper. 2: reflexivity.
+      unfold rcomp. intro. lia.
+  Qed.
+
+  Lemma up_substs_add n m σ :
+    up_substs n (up_substs m σ) =₁ up_substs (n + m) σ.
+  Proof.
+    induction n; simpl. reflexivity.
+    apply up_subst_proper. assumption.
+  Qed.
+
+  Equations subst_ctx (σ : subst) (Γ : ctx) : ctx :=
+  subst_ctx σ [] => [];
+  subst_ctx σ (A :: Γ) => substitute (up_substs (Datatypes.length Γ) σ) A :: subst_ctx σ Γ.
+
   (* Belonging to a context *)
   (* We use the non meta definitions, since we need to evaluate the possible renamings and substitutions *)
   Reserved Notation "Γ ∋ n : A" (at level 70, n at level 50).
@@ -331,6 +369,7 @@ Context {sig : signature}.
   (** Evaluating and renaming a judgment is much more straightforward **)
   Definition eval_jdg {s} m : mjdg s -> jdg := fmap jdgF (eval m).
   Definition rename_jdg ρ : jdg -> jdg := fmap jdgF (rename ρ).
+  Definition substitute_jdg σ : jdg -> jdg := fmap jdgF (substitute σ).
 
   Lemma scoped_jdg_rename_eval {s} (j : mjdg s) :
     forall m ρ,
@@ -366,8 +405,8 @@ Context {sig : signature}.
 
   (* Contexts in premises must be closed, and judgments must be scoped by the context *)
   Variant premise :=
-  | prem_pred (P : ctx -> Prop)
-    (HP : forall Δ ρ Γ, P Γ -> Δ ⊢r ρ : Γ -> P Δ)
+  (* | prem_pred (P : ctx -> Prop)
+    (HP : forall Δ ρ Γ, P Γ -> Δ ⊢r ρ : Γ -> P Δ) *)
   | prem_ind {n} (Δ : mctx 0 n) (j : mjdg n).
 
   (* The judgment of the conclusion must be closed *)
@@ -404,11 +443,11 @@ Context {sig : signature}.
       In (prem_ind Δ j) (r.(premises) x) ->
       (eval_ctx m Δ ++ Γ) ⊢ eval_jdg m j
     ) ->
-    (* Satisfy all leaf predicates, depending on Γ *)
+    (* (* Satisfy all leaf predicates, depending on Γ *)
     (
       forall P HP, In (prem_pred P HP) (r.(premises) x) ->
       P Γ
-    ) ->
+    ) -> *)
     Γ ⊢ eval_jdg m (r.(conclusion) x)
   | tvar (Γ : ctx) (n : nat) (A : term) :
     Γ ∋ n : A ->
@@ -440,6 +479,11 @@ Context {sig : signature}.
     Δ ⊢ ((σ 0), substitute (rscomp rshift σ) A) ->
     Δ ⊢s σ : A::Γ
   where "Δ ⊢s σ : Γ " := (styping Δ σ Γ).
+  Lemma conv_styping Δ ρ ρ' Γ :
+    Δ ⊢s ρ : Γ ->
+    ρ = ρ' ->
+    Δ ⊢s ρ' : Γ.
+  Proof. intros; subst; assumption. Qed.
 
   (*********************************************************************************)
   (** *** Renaming lemmas *)
@@ -539,17 +583,17 @@ Context {sig : signature}.
     shelve.
     exact r. exact x.
     assumption.
-    3: {symmetry. apply closed_jdg_rename_eval. }
+    2: {symmetry. apply closed_jdg_rename_eval. }
     (* Case of an inductive premise *)
     - intros.
-      rewrite <- scoped_jdg_rename_eval. eapply H1. apply H3.
+      rewrite <- scoped_jdg_rename_eval. eapply H1. apply H2.
       rewrite <- scoped_ctx_rename_eval. simpl.
       eapply conv_rtyping.
       eapply up_rtyping_n. assumption.
       f_equal. symmetry. apply eval_length.
-    (* Case of a predicate premise *)
+    (* (* Case of a predicate premise *)
     - intros.
-      eapply HP. 2: apply Hρ. eapply H2. apply H3.
+      eapply HP. 2: apply Hρ. eapply H2. apply H3. *)
     (* Case of a variable *)
     - unfold rename_jdg, fmap, FMapProd, fmap, FMapId.
       constructor. eapply rename_in. apply H. assumption.
@@ -563,6 +607,202 @@ Context {sig : signature}.
     eapply preserve_renaming. apply H.
     apply weaken_rtyping. apply id_rtyping.
   Qed.
+
+  (* Substitution *)
+
+  Lemma ren_is_subst {k} r (t : expr k) :
+    rename r t = substitute (fun i => E_var (r i)) t.
+  Proof.
+    induction t in r |- *; simpl;
+    rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
+    f_equal. apply substitute_proper. 2: reflexivity.
+    intros [|n]; simpl. reflexivity.
+    unfold rcomp, rshift, srcomp. simpl. reflexivity.
+  Qed.
+
+  Lemma scoped_substitute_eval {k} (n : nat) (t : mexpr k n) :
+    forall m σ,
+    substitute (up_substs n σ) (eval m t) =
+    eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
+  Proof.
+    intros.
+    induction t in m, σ |- *;
+    simpl in *;
+    rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
+    - apply up_substs_lt. assumption.
+    - rewrite 2!subst_subst.
+      unfold scomp. apply substitute_proper. 2: reflexivity.
+      intro i. destruct (i <? lscope k) eqn:Hi.
+      + rewrite up_substs_lt.
+        (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
+        2: apply PeanoNat.Nat.ltb_lt; assumption. simpl.
+        rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
+        erewrite <- HI. 2: apply Hi. apply H. assumption.
+      + rewrite PeanoNat.Nat.ltb_ge in Hi.
+        simpl.
+        rewrite !up_substs_gt. 2: lia. 2: lia.
+        rewrite subst_ren.
+        rewrite ren_is_subst.
+        apply substitute_proper.
+        2: {f_equal. lia. }
+        intro j. unfold rscomp.
+        match goal with
+        | |- _ = if ?b then _ else _ =>
+          assert (_H : b = false);
+          [idtac|rewrite _H]
+        end.
+        {apply PeanoNat.Nat.ltb_ge. lia. }
+        f_equal. lia.
+  Qed.
+  Corollary closed_substitute_eval {k} (t : mexpr k 0) :
+    forall m σ,
+    substitute σ (eval m t) =
+    eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
+  Proof. apply (@scoped_substitute_eval _ 0). Qed.
+
+  Lemma scoped_ctx_substitute_eval {s n} (Γ : mctx s n) :
+    forall m σ,
+    subst_ctx (up_substs s σ) (eval_ctx m Γ) =
+    eval_ctx (fun k => substitute (up_substs (lscope k) σ) (m k)) Γ.
+  Proof.
+    induction Γ; intros; simpl.
+    - reflexivity.
+    - rewrite IHΓ. f_equal.
+      rewrite <- eval_length. rewrite <- scoped_substitute_eval.
+      apply substitute_proper. 2: reflexivity.
+      apply up_substs_add.
+  Qed.
+
+  Lemma scoped_jdg_substitute_eval {s} (j : mjdg s) :
+    forall m σ,
+    substitute_jdg (up_substs s σ) (eval_jdg m j) =
+    eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
+  Proof.
+    (* This should be made abstractly at some point I suppose *)
+    intros. destruct j as [t A]. unfold substitute_jdg, eval_jdg, lift, LiftId in *.
+    simpl. rewrite func_comp.
+    unfold fmap, FMapProd, fmap, FMapId.
+    f_equal; try apply scoped_substitute_eval.
+  Qed.
+  Corollary closed_jdg_substitute_eval (j : mjdg 0) :
+    forall m σ,
+    substitute_jdg σ (eval_jdg m j) =
+    eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
+  Proof. apply (@scoped_jdg_substitute_eval 0). Qed.
+
+  Lemma styping_proper :
+    Proper (eq ==> eq1 ==> eq ==> Basics.impl) styping.
+  Proof.
+    intros Δ' Δ HΔ σ σ' Hσ Γ' Γ HΓ H; subst.
+    induction H in σ', Hσ |- *; intros; constructor.
+    - apply IHstyping. apply rscomp_proper. reflexivity. assumption.
+    - rewrite <- Hσ. assumption.
+  Qed.
+  Lemma conv_stype_s Δ σ σ' Γ :
+    Δ ⊢s σ : Γ ->
+    σ =₁ σ' ->
+    Δ ⊢s σ' : Γ.
+  Proof.
+    intros Hσ Heq. Fail rewrite <- Heq.
+    eapply styping_proper. reflexivity. apply Heq. reflexivity. assumption.
+  Qed.
+
+  Lemma substitute_in Δ Γ σ n A :
+    Γ ∋ n : A ->
+    Δ ⊢s σ : Γ ->
+    Δ ⊢ (σ n, substitute σ A).
+  Proof.
+    intros HΓ Hσ. induction HΓ in Δ, σ, Hσ |- *; intros;
+    inversion Hσ; subst; rewrite subst_ren.
+    - assumption.
+    - eapply conv_proof_j. apply IHHΓ. apply H3.
+      reflexivity.
+  Qed.
+
+  (* Lemma styping_comp Γ Δ Θ σ σ' :
+    Δ ⊢s σ : Γ ->
+    Θ ⊢s σ' : Δ ->
+    Θ ⊢s scomp σ σ' : Γ.
+  Proof.
+    intros Hσ Hσ'. induction Hσ in Θ, σ', Hσ' |- *; intros; constructor.
+    - eapply conv_stype_s.
+      apply IHHσ. apply Hσ'. reflexivity.
+    - eapply conv_proof_j. unfold rcomp. eapply rename_in. apply H. assumption.
+      rewrite ren_ren, rcomp_assoc. reflexivity.
+  Qed. *)
+
+  Lemma weaken_styping Γ σ Δ A :
+    Δ ⊢s σ : Γ ->
+    A::Δ ⊢s srcomp σ S : Γ.
+  Proof.
+    intros Hσ. induction Hσ in A |- *; intros; constructor.
+    - apply IHHσ.
+    - eapply conv_proof_j. apply weaken_typing. apply H.
+      simpl. unfold fmap, FMapId.
+      rewrite ren_subst. reflexivity.
+  Qed.
+
+  Lemma up_styping Γ σ Δ A :
+    Δ ⊢s σ : Γ ->
+    (substitute σ A)::Δ ⊢s up_subst σ : A::Γ.
+  Proof.
+    intros Hσ. constructor.
+    - apply weaken_styping. assumption.
+    - simpl. constructor.
+      eapply conv_in_t. constructor.
+      rewrite ren_subst. reflexivity.
+  Qed.
+
+  Corollary up_styping_n Γ σ Δ Θ :
+    Δ ⊢s σ : Γ ->
+    (subst_ctx σ Θ) ++ Δ ⊢s up_substs (Datatypes.length Θ) σ : Θ ++ Γ.
+  Proof.
+    induction Θ in Γ, σ, Δ |- *; intros; simpl in *.
+    - assumption.
+    - apply up_styping.
+      apply IHΘ. assumption.
+  Qed.
+
+  Lemma id_styping Γ :
+    Γ ⊢s sid : Γ.
+  Proof.
+    induction Γ. constructor.
+    replace a with (substitute sid a) at 1 by apply subst_sid.
+    Fail rewrite <- up_subst_sid.
+    eapply conv_stype_s.
+    - apply up_styping. assumption.
+    - apply up_subst_sid.
+  Qed.
+
+  Theorem preserve_subst Γ j Δ σ :
+    Γ ⊢ j ->
+    Δ ⊢s σ : Γ ->
+    Δ ⊢ substitute_jdg σ j.
+  Proof.
+    intros Hj Hσ.
+    induction Hj in Δ, σ, Hσ |- *.
+    (* We apply rule [r x] *)
+    eapply conv_proof_j.
+    unshelve econstructor.
+    shelve.
+    exact r. exact x.
+    assumption.
+    2: {symmetry. apply closed_jdg_substitute_eval. }
+    (* Case of an inductive premise *)
+    - intros.
+      rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H2.
+      rewrite <- scoped_ctx_substitute_eval. simpl.
+      eapply conv_styping.
+      eapply up_styping_n. assumption.
+      f_equal. symmetry. apply eval_length.
+    (* (* Case of a predicate premise *)
+    - intros.
+      admit. *)
+    (* Case of a variable *)
+    - unfold substitute_jdg, fmap, FMapProd, fmap, FMapId.
+      eapply substitute_in. apply H. assumption.
+  Qed.
+
 End WithSignature.
 Notation "Γ ∋ n : A" := (inctx Γ n A) (at level 70, n at level 50).
 Notation "Γ ⊢( s ) j" := (@proof _ s Γ j) (at level 70).
@@ -745,12 +985,11 @@ Section LambdaPi.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
-    3: reflexivity.
-    - intros. destruct_n H.
-      inversion H; subst. clean_existT. clear H.
-      simpl. unfold fmap, FMapId. simpl.
-      constructor. constructor.
-    - intros. destruct_n H. inversion H.
+    2: reflexivity.
+    intros. destruct_n H.
+    inversion H; subst. clean_existT. clear H.
+    simpl. unfold fmap, FMapId. simpl.
+    constructor. constructor.
   Qed.
 
   Lemma proof_type_id_app n :
@@ -766,20 +1005,19 @@ Section LambdaPi.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
-    3: reflexivity.
-    - intros. destruct_n H.
-      + inversion H. clean_existT. clean_existT. clear H.
-        simpl. unfold fmap, FMapId. simpl.
-        epose (weaken_typing []).
-        match goal with | |- _ ⊢ ?j =>
-        specialize (p j)
-        end.
-        simpl in p. unfold fmap, FMapId in p. simpl in p.
-        apply p. clear p.
-        apply proof_type_id.
-      + inversion H. clean_existT. clean_existT. clear H.
-        simpl. unfold fmap, FMapId. simpl. constructor.
-        constructor.
-    - intros. destruct_n H. inversion H. inversion H.
+    2: reflexivity.
+    intros. destruct_n H.
+    - inversion H. clean_existT. clean_existT. clear H.
+      simpl. unfold fmap, FMapId. simpl.
+      epose (weaken_typing []).
+      match goal with | |- _ ⊢ ?j =>
+      specialize (p j)
+      end.
+      simpl in p. unfold fmap, FMapId in p. simpl in p.
+      apply p. clear p.
+      apply proof_type_id.
+    - inversion H. clean_existT. clean_existT. clear H.
+      simpl. unfold fmap, FMapId. simpl. constructor.
+      constructor.
   Qed.
 End LambdaPi.
