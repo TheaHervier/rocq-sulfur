@@ -10,15 +10,17 @@ Context {sig : signature}.
   #[local] Reserved Notation "'marg' ty" (at level 0, ty at level 0).
   #[local] Reserved Notation "'margs' tys" (at level 0, tys at level 0).
 
+  (* Reuse the notations from [ParamSyntax.v] *)
   #[local] Notation "'term'" := (P.expr Kt) (at level 0).
   #[local] Notation "'arg' ty" := (P.expr (Ka ty)) (at level 0, ty at level 0).
   #[local] Notation "'args' tys" := (P.expr (Kal tys)) (at level 0, tys at level 0).
 
   Unset Elimination Schemes.
+
   (* Meta variables *)
   Record mvar := {
     (* Meta variables do not have binders, so we can use names easily. We use natural numbers for names *)
-    index : nat;
+    name : nat;
 
     (* Local scope of a mvar, i.e. the number of terms that will be able to be substituted in this mvar *)
     lscope : nat
@@ -52,6 +54,8 @@ Context {sig : signature}.
       - A family [scopes] of scopes, such that [scopes i] is the scope of the [ith] term of the substitution
       - A proof saying that all [lscope k] first elements of the substitution are of scope [scope]
       - The substitutionn that is a function from natural numbers
+
+    Note that because of this, equality is not decidable on [mterms], and equality is not even the relation we should be interested in.
     **)
     M_mvar scope (k : mvar) :
       (* For every index of the substitution, gives a scope *)
@@ -63,24 +67,11 @@ Context {sig : signature}.
     and "'marg' ty" := (mexpr (Ka ty))
     and "'margs' tys" := (mexpr (Kal tys)).
 
-  (* A meta substitution can be described by the following data: *)
-  Record msubst {k s} := {
-    (**
-      - k is the number of variables that will be substituted
-      - s is the scope of the substitution
-      When used, the type of the substitution is not important, only the objects matter
-    **)
-    scopes : nat -> nat;
-    Hscopes :
-      forall i : nat, i < k -> scopes i = s;
-    ms :
-      forall i : nat, mterm (scopes i)
-  }.
-  Arguments msubst : clear implicits.
+  Set Elimination Schemes.
+  Derive NoConfusion for mexpr.
 
-  (* We currify [msubst]s in [mexpr] so that it is easier to use when proving things on [mexpr]. The tradeoff is that it is slightly heavier when defining a concrete syntax (which in any case, should not be done by hand). *)
-
-  Section ExprInd.
+  (** Better induction scheme for [mexpr] **)
+  Section MExprInd.
     Context (P : forall k s, mexpr k s -> Prop).
 
     Context (H_var : forall s i (Hsi : i < s), P _ _ (M_var s i Hsi)).
@@ -109,715 +100,730 @@ Context {sig : signature}.
     - apply H_mvar. intros. apply mexpr_ind.
     Qed.
 
-  End ExprInd.
+  End MExprInd.
 
-  (** Some basic [msubsts] (i.e. substitutions for meta terms) **)
-  (**
-    Identity substitution of [k] meta terms, scoped by [k].
-  **)
-  Program Definition msid (k : nat) : msubst k k := {|
-    scopes := fun i => if i <? k then k else S i;
-    ms := fun i => M_var _ i _
-  |}.
-  Next Obligation.
-    (* All of the interesting terms are scoped by k *)
-    apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
-  Qed.
-  Next Obligation.
-    (* All the terms (here, variables) are well scoped by [scopes] *)
-    destruct (i <? k) eqn:Hi.
-    apply PeanoNat.Nat.ltb_lt. assumption.
-    lia.
-  Qed.
+  (** Substitution of meta variables **)
+  Section MetaSubst.
 
-  (**
-    Shift a substitution
-  **)
-  Program Definition mscons {k s : nat} (t : mterm s) (σ : msubst k s) : msubst (S k) s := {|
-    scopes := fun i => match i with
-    | 0 => s
-    | S i => (σ.(scopes) i)
-    end;
+    (**
+      We currify [msubst]s in [mexpr] so that it is easier to use when proving things on [mexpr]. The tradeoff is that it is slightly heavier when defining a concrete syntax (which in any case, should not be done by hand).
+      We describe a substitution of meta variable [msubst] with a record.
+    *)
+    Record msubst {k s} := {
+      (**
+        - k is the number of variables that will be substituted
+        - s is the scope of the substitution
+        When used, the type of the substitution is not important, only the objects matter
+      **)
+      scopes : nat -> nat;
+      Hscopes :
+        forall i : nat, i < k -> scopes i = s;
+      ms :
+        forall i : nat, mterm (scopes i)
+    }.
+    Arguments msubst : clear implicits.
 
-    ms := fun i => match i with
-    | 0 => t
-    | S i => σ.(ms) i
-    end
-  |}.
-  Next Obligation.
-    destruct i as [|i]. reflexivity.
-    apply Hscopes. lia.
-  Qed.
-
-  (* Some useful meta variables *)
-  Program Definition scoped_mvar (name : nat) (s : nat) : mterm s :=
-    M_mvar s {|index:=name;lscope:=s|} (msid s).(scopes) _ (msid s).(ms).
-  Next Obligation.
-    apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
-  Qed.
-
-  Program Definition one_subst (name : nat) (t : mterm 0) :=
-    M_mvar 0 {|index:=name;lscope:= 1|} (mscons t (msid 0)).(scopes) _ (mscons t (msid 0)).(ms).
-  Next Obligation.
-    destruct i. reflexivity. lia.
-  Qed.
-
-  (*********************************************************************************)
-  (** *** Evaluation of a meta term *)
-  (*********************************************************************************)
-
-  Definition menv := mvar -> P.expr Kt.
-  Definition default_menv : menv := fun k => E_var (index k).
-
-  Equations eval {s k} (m : menv) (t : mexpr k s) : P.expr k :=
-  eval m (M_var _ i _) := E_var i ;
-  eval m (M_ctor _ c al) := E_ctor c (eval m al) ;
-  eval m (M_al_nil _) := E_al_nil ;
-  eval m (M_al_cons _ a al) := E_al_cons (eval m a) (eval m al) ;
-  eval m (M_abase _ b x) := E_abase b x ;
-  eval m (M_aterm _ t) := E_aterm (eval m t) ;
-
-  eval m (M_abind _ a) :=
-    (* We don't shift anything ; it is dealt with when evaluating a meta variable *)
-    E_abind (eval m a);
-  eval m (M_mvar _ k _ _ σ) := substitute
-    (fun i =>
-      if i<?lscope k then
-        eval m (σ i)
-      else
-        (* [- lscope k] shifts the indexes to take into account the substitution *)
-        (* [+ s] takes into account the scope, "the number of lambdas we are under" *)
-        E_var (i - lscope k + s)
-    ) (m k).
-  (* Locate "=₁". *)
-  #[export] Instance eval_proper_inst {k s} :
-    Proper (eq1 ==> eq ==> eq) (@eval s k).
-    intros m m' Hm t' t Ht. subst.
-    induction t in m, m', Hm |- *; simpl in *; intros.
-    - reflexivity.
-    - erewrite IHt. reflexivity. assumption.
-    - reflexivity.
-    - erewrite IHt1, IHt2. reflexivity. assumption. assumption.
-    - reflexivity.
-    - erewrite IHt. reflexivity. assumption.
-    - f_equal. apply IHt. setoid_rewrite Hm. reflexivity.
-    - rewrite Hm.
-      apply substitute_proper. 2: reflexivity.
-      intro i. destruct (i<?lscope k) eqn:Hi. 2: reflexivity.
-      apply H. 2: assumption.
-      apply PeanoNat.Nat.ltb_lt. assumption.
-  Qed.
-
-  Lemma eval_proper m m' :
-    m =₁ m' -> forall {k s} (t : mexpr k s),
-    eval m t = eval m' t.
-  Proof.
-    intros Hm k s t.
-    rewrite Hm. reflexivity.
-  Qed.
-
-  (* This lemma is the commutation lemma in Thiago's thesis *)
-  Lemma scoped_rename_eval {k} (n : nat) (t : mexpr k n) :
-    forall m ρ,
-    rename (up_rens n ρ) (eval m t) =
-    eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
-  Proof.
-    intros.
-    induction t in m, ρ |- *;
-    simpl in *;
-    rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
-    - f_equal.
-      apply up_rens_lt. assumption.
-    - rewrite ren_subst, subst_ren.
-      unfold srcomp, rscomp. apply substitute_proper. 2: reflexivity.
-      intro i. destruct (i <? lscope k) eqn:Hi.
-      + rewrite up_rens_lt.
-        (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
-        2: apply PeanoNat.Nat.ltb_lt; assumption.
-        rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
-        erewrite <- HI. 2: apply Hi. rewrite H.
-        reflexivity. assumption.
-      + rewrite PeanoNat.Nat.ltb_ge in Hi.
-        rewrite up_rens_gt. 2: lia.
-        match goal with
-        | |- _ = if ?b then _ else _ =>
-          assert (_H : b = false);
-          [idtac|rewrite _H]
-        end.
-        {apply PeanoNat.Nat.ltb_ge. lia. }
-        simpl. f_equal.
-        rewrite up_rens_gt. 2: lia.
-        replace (i - lscope k + s - s) with (i - lscope k) by lia.
+    (* Identity substitution of [k] meta terms, scoped by [k]. *)
+    #[refine] Definition msid (k : nat) : msubst k k := {|
+      scopes := fun i => if i <? k then k else S i;
+      ms := fun i => M_var _ i _
+    |}.
+    Proof.
+      - (* All of the interesting terms are scoped by k *)
+        intros. apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
+      - (* All the terms (here, variables) are well scoped by [scopes] *)
+        destruct (i <? k) eqn:Hi.
+        apply PeanoNat.Nat.ltb_lt. assumption.
         lia.
-  Qed.
+    Defined.
 
-  Corollary closed_rename_eval {k} (t : mexpr k 0) :
-    forall m ρ,
-    rename ρ (eval m t) =
-    eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
-  Proof. apply (scoped_rename_eval 0). Qed.
+    (* Add a term to a substitution *)
+    #[refine] Definition mscons {k s : nat} (t : mterm s) (σ : msubst k s) : msubst (S k) s := {|
+      scopes := fun i => match i with
+      | 0 => s
+      | S i => (σ.(scopes) i)
+      end;
 
-  (** TODO : can this be generalized? **)
-  (* A context is a list of terms ; we require the contexts to be closed, so we need an ad-hoc definition *)
-  (* It will maybe be a pain to remake every function from [list]... Should I say that [mctx] are lists of dependent pairs, so that I can reuse lists, or is it too complicated for nothing? *)
-  (** We need the length of the context in order to scope everything correctly ; so [Γ : mctx s n] means that [Γ] is scoped by [s] and has length [n] **)
-  Inductive mctx : nat -> nat -> Type :=
-  (* [mctx scope len] *)
-  | mnil {scope : nat} : mctx scope 0
-  | mcons {scope n : nat}
-    (t : mterm (n+scope)) (Γ : mctx scope n) :
-    mctx scope (S n).
-  Definition ctx := list term.
+      ms := fun i => match i with
+      | 0 => t
+      | S i => σ.(ms) i
+      end
+    |}.
+    Proof.
+      intros.
+      destruct i as [|i]. reflexivity.
+      apply Hscopes. lia.
+    Defined.
 
-  (** Evaluation of a context **)
-  Equations eval_ctx {s n} (m : menv) (Γ : mctx s n) : ctx :=
-  eval_ctx m mnil := [] ;
-  eval_ctx m (mcons t Γ) := (eval m t)::eval_ctx m Γ.
+    (* Meta variable applied to no substitution (i.e. identity) *)
+    #[refine] Definition scoped_mvar (name : nat) (s : nat) : mterm s :=
+      M_mvar s {|name:=name;lscope:=s|} (msid s).(scopes) _ (msid s).(ms).
+    Proof.
+      intros. simpl in *. apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
+    Defined.
 
-  (** Evaluation preserves length **)
-  Lemma eval_length {s n} (Γ : mctx s n) :
-    forall m, n = Datatypes.length (eval_ctx m Γ).
-  Proof.
-    induction Γ; intros; simpl. reflexivity. f_equal. apply IHΓ.
-  Qed.
+    (* Meta variable where we substitute the first variable by [t] ; can be generalized *)
+    #[refine] Definition one_subst (name : nat) (t : mterm 0) :=
+      M_mvar 0 {|name:=name;lscope:= 1|} (mscons t (msid 0)).(scopes) _ (mscons t (msid 0)).(ms).
+    Proof.
+      destruct i. reflexivity. simpl. lia.
+    Defined.
+  End MetaSubst.
 
-  (** Renaming of a context: we need to shift the renamings accordingly **)
-  Equations rename_ctx (ρ : ren) (Γ : ctx) : ctx :=
-  rename_ctx ρ [] => [];
-  rename_ctx ρ (A :: Γ) => rename (up_rens (Datatypes.length Γ) ρ) A :: rename_ctx ρ Γ.
+  (** Evaluation of an expression with meta variables into expressions without **)
+  Section Evaluation.
+    Definition menv := mvar -> P.expr Kt.
+    Definition default_menv : menv := fun k => E_var (name k).
 
-  Lemma scoped_ctx_rename_eval {s n} (Γ : mctx s n) :
-    forall m ρ,
-    rename_ctx (up_rens s ρ) (eval_ctx m Γ) =
-    eval_ctx (fun k => rename (up_rens (lscope k) ρ) (m k)) Γ.
-  Proof.
-    induction Γ; intros; simpl.
-    - reflexivity.
-    - rewrite IHΓ. f_equal.
-      rewrite <- eval_length. rewrite <- scoped_rename_eval.
-      apply rename_proper. 2: reflexivity.
-      replace (scope + n) with (n + scope) by lia.
-      apply up_rens_add.
-  Qed.
+    Equations eval {s k} (m : menv) (t : mexpr k s) : P.expr k :=
+    eval m (M_var _ i _) := E_var i ;
+    eval m (M_ctor _ c al) := E_ctor c (eval m al) ;
+    eval m (M_al_nil _) := E_al_nil ;
+    eval m (M_al_cons _ a al) := E_al_cons (eval m a) (eval m al) ;
+    eval m (M_abase _ b x) := E_abase b x ;
+    eval m (M_aterm _ t) := E_aterm (eval m t) ;
 
-  Equations up_substs (k : nat) (σ : subst) : subst :=
-  up_substs 0 σ := σ ;
-  up_substs (S k) σ := up_subst (up_substs k σ).
+    eval m (M_abind _ a) :=
+      (* We don't shift anything ; it is dealt with when evaluating a meta variable *)
+      E_abind (eval m a);
+    eval m (M_mvar _ k _ _ σ) := substitute
+      (fun i =>
+        if i<?lscope k then
+          eval m (σ i)
+        else
+          (* [- lscope k] shifts the indexes to take into account the substitution *)
+          (* [+ s] takes into account the scope, "the number of lambdas we are under" *)
+          E_var (i - lscope k + s)
+      ) (m k).
 
-  Lemma up_substs_lt (i k : nat) (σ : subst) :
-    i < k -> up_substs k σ i = E_var i.
-  Proof.
-    intro. induction k in i, H |- *; simpl.
-    - lia.
-    - destruct i as [|i]. simpl. reflexivity.
-      simpl. unfold srcomp, rshift. rewrite IHk. reflexivity. lia.
-  Qed.
+    #[export] Instance eval_proper_inst {k s} :
+      Proper (eq1 ==> eq ==> eq) (@eval s k).
+    Proof.
+      intros m m' Hm t' t Ht. subst.
+      induction t in m, m', Hm |- *; simpl in *; intros.
+      - reflexivity.
+      - erewrite IHt. reflexivity. assumption.
+      - reflexivity.
+      - erewrite IHt1, IHt2. reflexivity. assumption. assumption.
+      - reflexivity.
+      - erewrite IHt. reflexivity. assumption.
+      - f_equal. apply IHt. setoid_rewrite Hm. reflexivity.
+      - rewrite Hm.
+        apply substitute_proper. 2: reflexivity.
+        intro i. destruct (i<?lscope k) eqn:Hi. 2: reflexivity.
+        apply H. 2: assumption.
+        apply PeanoNat.Nat.ltb_lt. assumption.
+    Qed.
 
-  Lemma up_substs_gt (i k : nat) (σ : subst) :
-    i >= k -> up_substs k σ i = rename (fun i => i + k) (σ (i - k)).
-  Proof.
-    induction k in i |- *; intros; simpl.
-    - transitivity (σ (i - 0)).
-      assert (i = i - 0) by lia. rewrite H0 at 1. reflexivity.
-      etransitivity. symmetry. apply ren_rid.
-      apply rename_proper. 2: reflexivity. intro. unfold rid. lia.
-    - destruct i as [|i]; simpl. lia.
-      unfold srcomp, rshift. rewrite IHk. 2: lia.
-      rewrite ren_ren. apply rename_proper. 2: reflexivity.
-      unfold rcomp. intro. lia.
-  Qed.
+    Lemma eval_proper m m' :
+      m =₁ m' -> forall {k s} (t : mexpr k s),
+      eval m t = eval m' t.
+    Proof.
+      intros Hm k s t.
+      rewrite Hm. reflexivity.
+    Qed.
+  End Evaluation.
 
-  Lemma up_substs_add n m σ :
-    up_substs n (up_substs m σ) =₁ up_substs (n + m) σ.
-  Proof.
-    induction n; simpl. reflexivity.
-    apply up_subst_proper. assumption.
-  Qed.
+  (** Definitions of contexts **)
+  Section Contexts.
+    (** TODO : can this be generalized? **)
+    (* A context is a list of terms ; we require the contexts to be closed, so we need an ad-hoc definition *)
+    (* It will maybe be a pain to remake every function from [list]... Should I say that [mctx] are lists of dependent pairs, so that I can reuse lists, or is it too complicated for nothing? *)
+    (** We need the length of the context in order to scope everything correctly ; so [Γ : mctx s n] means that [Γ] is scoped by [s] and has length [n] **)
+    Inductive mctx : nat -> nat -> Type :=
+    (* [mctx scope len] *)
+    | mnil {scope : nat} : mctx scope 0
+    | mcons {scope n : nat}
+      (t : mterm (n+scope)) (Γ : mctx scope n) :
+      mctx scope (S n).
+    Definition ctx := list term.
 
-  Equations subst_ctx (σ : subst) (Γ : ctx) : ctx :=
-  subst_ctx σ [] => [];
-  subst_ctx σ (A :: Γ) => substitute (up_substs (Datatypes.length Γ) σ) A :: subst_ctx σ Γ.
+    (** Evaluation of a context **)
+    Equations eval_ctx {s n} (m : menv) (Γ : mctx s n) : ctx :=
+    eval_ctx m mnil := [] ;
+    eval_ctx m (mcons t Γ) := (eval m t)::eval_ctx m Γ.
 
-  (* Belonging to a context *)
-  (* We use the non meta definitions, since we need to evaluate the possible renamings and substitutions *)
-  Reserved Notation "Γ ∋ n : A" (at level 70, n at level 50).
-  Inductive inctx : ctx -> nat -> term -> Prop :=
-  | in_head A Γ :
-    A::Γ ∋ 0 : rename rshift A
-  | in_tail A B Γ n :
-    Γ ∋ n : A ->
-    B::Γ ∋ S n : rename rshift A
-  where "Γ ∋ n : A" := (inctx Γ n A).
+    (** Evaluation preserves length **)
+    Lemma eval_length {s n} (Γ : mctx s n) :
+      forall m, n = Datatypes.length (eval_ctx m Γ).
+    Proof.
+      induction Γ; intros; simpl. reflexivity. f_equal. apply IHΓ.
+    Qed.
 
-  (* Allows to use existential variables easily *)
-  Lemma conv_in_t Γ n A B :
-    Γ ∋ n : A ->
-    A = B ->
-    Γ ∋ n : B.
-  Proof. intros; subst; assumption. Qed.
-  Lemma conv_in_n Γ n m A :
-    Γ ∋ n : A ->
-    n = m ->
-    Γ ∋ m : A.
-  Proof. intros; subst; assumption. Qed.
+    (** Renaming of a context: we need to shift the renamings accordingly **)
+    Equations rename_ctx (ρ : ren) (Γ : ctx) : ctx :=
+    rename_ctx ρ [] => [];
+    rename_ctx ρ (A :: Γ) => rename (up_rens (Datatypes.length Γ) ρ) A :: rename_ctx ρ Γ.
 
-  (* A judgment is of the form [⊢ t : A], so a pair of (scoped meta) terms *)
-  Definition jdgF X := (X * X)%type.
-  Definition mjdg (s : nat) := jdgF (mterm s).
-  Definition jdg  := jdgF term.
+    (* TODO : should be moved in ParamSyntax *)
+    Equations up_substs (k : nat) (σ : subst) : subst :=
+    up_substs 0 σ := σ ;
+    up_substs (S k) σ := up_subst (up_substs k σ).
 
-  (** Evaluating and renaming a judgment is much more straightforward **)
-  Definition eval_jdg {s} m : mjdg s -> jdg := fmap jdgF (eval m).
-  Definition rename_jdg ρ : jdg -> jdg := fmap jdgF (rename ρ).
-  Definition substitute_jdg σ : jdg -> jdg := fmap jdgF (substitute σ).
+    Lemma up_substs_lt (i k : nat) (σ : subst) :
+      i < k -> up_substs k σ i = E_var i.
+    Proof.
+      intro. induction k in i, H |- *; simpl.
+      - lia.
+      - destruct i as [|i]. simpl. reflexivity.
+        simpl. unfold srcomp, rshift. rewrite IHk. reflexivity. lia.
+    Qed.
 
-  Lemma scoped_jdg_rename_eval {s} (j : mjdg s) :
-    forall m ρ,
-    rename_jdg (up_rens s ρ) (eval_jdg m j) =
-    eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
-  Proof.
-    (* This should be made abstractly at some point I suppose *)
-    intros. destruct j as [t A]. unfold rename_jdg, eval_jdg, lift, LiftId in *.
-    simpl. rewrite func_comp.
-    unfold fmap, FMapProd, fmap, FMapId.
-    f_equal; try apply scoped_rename_eval.
-  Qed.
-  Corollary closed_jdg_rename_eval (j : mjdg 0) :
-    forall m ρ,
-    rename_jdg ρ (eval_jdg m j) =
-    eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
-  Proof. apply (@scoped_jdg_rename_eval 0). Qed.
+    Lemma up_substs_gt (i k : nat) (σ : subst) :
+      i >= k -> up_substs k σ i = rename (fun i => i + k) (σ (i - k)).
+    Proof.
+      induction k in i |- *; intros; simpl.
+      - transitivity (σ (i - 0)).
+        assert (i = i - 0) by lia. rewrite H0 at 1. reflexivity.
+        etransitivity. symmetry. apply ren_rid.
+        apply rename_proper. 2: reflexivity. intro. unfold rid. lia.
+      - destruct i as [|i]; simpl. lia.
+        unfold srcomp, rshift. rewrite IHk. 2: lia.
+        rewrite ren_ren. apply rename_proper. 2: reflexivity.
+        unfold rcomp. intro. lia.
+    Qed.
 
-  Reserved Notation "Δ ⊢r ρ : Γ" (at level 70, ρ at level 50).
-  Inductive rtyping : ctx -> ren -> ctx -> Prop :=
-  | rtyping_empty Δ ρ :
-    Δ ⊢r ρ : []
-  | rtyping_cons Δ ρ Γ A :
-    Δ ⊢r rcomp rshift ρ : Γ ->
-    Δ ∋ (ρ 0) : rename (rcomp rshift ρ) A ->
-    Δ ⊢r ρ : A::Γ
-  where "Δ ⊢r ρ : Γ " := (rtyping Δ ρ Γ).
-  Lemma conv_rtyping Δ ρ ρ' Γ :
-    Δ ⊢r ρ : Γ ->
-    ρ = ρ' ->
-    Δ ⊢r ρ' : Γ.
-  Proof. intros; subst; assumption. Qed.
+    Lemma up_substs_add n m σ :
+      up_substs n (up_substs m σ) =₁ up_substs (n + m) σ.
+    Proof.
+      induction n; simpl. reflexivity.
+      apply up_subst_proper. assumption.
+    Qed.
 
-  (* Contexts in premises must be closed, and judgments must be scoped by the context *)
-  Variant premise :=
-  (* | prem_pred (P : ctx -> Prop)
-    (HP : forall Δ ρ Γ, P Γ -> Δ ⊢r ρ : Γ -> P Δ) *)
-  | prem_ind {n} (Δ : mctx 0 n) (j : mjdg n).
+    Equations subst_ctx (σ : subst) (Γ : ctx) : ctx :=
+    subst_ctx σ [] => [];
+    subst_ctx σ (A :: Γ) => substitute (up_substs (Datatypes.length Γ) σ) A :: subst_ctx σ Γ.
 
-  (* The judgment of the conclusion must be closed *)
-  Record rule := {
-    param : Type; (* A rule is parametrized by a type, e.g. a rule for any natural number *)
-    premises : param -> list premise;
-    conclusion : param -> mjdg 0;
-  }.
+    (* Belonging to a context *)
+    (* We use the non meta definitions, since we need to evaluate the possible renamings and substitutions *)
+    Reserved Notation "Γ ∋ n : A" (at level 70, n at level 50).
+    Inductive inctx : ctx -> nat -> term -> Prop :=
+    | in_head A Γ :
+      A::Γ ∋ 0 : rename rshift A
+    | in_tail A B Γ n :
+      Γ ∋ n : A ->
+      B::Γ ∋ S n : rename rshift A
+    where "Γ ∋ n : A" := (inctx Γ n A).
 
-  Record jdg_sig := {
-    rules : list rule
-  }.
-  (* Other solution, maybe more heavy to write:
-    [rules : list {param : Type & param -> rule}]
-    and remove [param] from [rule]
-  *)
+    (* Allows to use existential variables easily *)
+    Lemma conv_in_t Γ n A B :
+      Γ ∋ n : A ->
+      A = B ->
+      Γ ∋ n : B.
+    Proof. intros; subst; assumption. Qed.
+    Lemma conv_in_n Γ n m A :
+      Γ ∋ n : A ->
+      n = m ->
+      Γ ∋ m : A.
+    Proof. intros; subst; assumption. Qed.
+  End Contexts.
+  Notation "Γ ∋ n : A" := (inctx Γ n A) (at level 70, n at level 50).
 
-  (*********************************************************************************)
-  (** *** Derivation tree *)
-  (*********************************************************************************)
+  (** Definition of judgments **)
+  Section Judgments.
+    (* A judgment is of the form [⊢ t : A], so a pair of (scoped meta) terms *)
+    Definition jdgF X := (X * X)%type.
+    Definition mjdg (s : nat) := jdgF (mterm s).
+    Definition jdg  := jdgF term.
 
+    (** Evaluating and renaming a judgment is much more straightforward **)
+    Definition eval_jdg {s} m : mjdg s -> jdg := fmap jdgF (eval m).
+    Definition rename_jdg ρ : jdg -> jdg := fmap jdgF (rename ρ).
+    Definition substitute_jdg σ : jdg -> jdg := fmap jdgF (substitute σ).
+  End Judgments.
+
+  (** Definition of a signature of rules **)
+  Section RulesSignature.
+    (* Contexts in premises must be closed, and judgments must be scoped by the context *)
+    Variant premise :=
+    (* | prem_pred (P : ctx -> Prop)
+      (HP : forall Δ ρ Γ, P Γ -> Δ ⊢r ρ : Γ -> P Δ) *)
+    | prem_ind {n} (Δ : mctx 0 n) (j : mjdg n).
+    Derive NoConfusion for premise.
+
+    (* The judgment of the conclusion must be closed *)
+    Record rule := {
+      param : Type; (* A rule is parametrized by a type, e.g. a rule for any natural number *)
+      premises : param -> list premise;
+      conclusion : param -> mjdg 0;
+    }.
+
+    Record jdg_sig := {
+      rules : list rule
+    }.
+    (* Other solution, maybe more heavy to write:
+      [rules : list {param : Type & param -> rule}]
+      and remove [param] from [rule]
+    *)
+  End RulesSignature.
   Context {jsig : jdg_sig}.
-  Reserved Notation "Γ ⊢ j" (at level 70).
-  Inductive proof : ctx -> jdg -> Prop :=
-  (*
-    We need a context, a rule and an instanciation of this rule, that will give the conclusion
-  *)
-  | step (m : menv) (Γ : ctx) (r : rule) (x : r.(param)) :
-    (* The rule must be in the signature *)
-    In r (jsig.(rules)) ->
-    (* Satisfy all inductive premises *)
-    (
-      forall {n} (Δ : mctx 0 n) (j : mjdg n),
-      In (prem_ind Δ j) (r.(premises) x) ->
-      (eval_ctx m Δ ++ Γ) ⊢ eval_jdg m j
-    ) ->
-    (* (* Satisfy all leaf predicates, depending on Γ *)
-    (
-      forall P HP, In (prem_pred P HP) (r.(premises) x) ->
-      P Γ
-    ) -> *)
-    Γ ⊢ eval_jdg m (r.(conclusion) x)
-  | tvar (Γ : ctx) (n : nat) (A : term) :
-    Γ ∋ n : A ->
-    Γ ⊢ (E_var n, A) (* How to generalize this? *)
-  where "Γ ⊢ j" := (proof Γ j).
-  (* Notation "Γ ⊢( s ) j" := (@proof s Γ j) (at level 70). *)
 
-  Lemma conv_proof_j Γ j j' :
-    Γ ⊢ j ->
-    j = j' ->
-    Γ ⊢ j'.
-  Proof. intros; subst; assumption. Qed.
-  Lemma conv_proof_c Γ Γ' j :
-    Γ ⊢ j ->
-    Γ = Γ' ->
-    Γ' ⊢ j.
-  Proof. intros; subst; assumption. Qed.
+  (** Derivation with the rules of the signature **)
+  Section Derivation.
+    Reserved Notation "Γ ⊢ j" (at level 70).
+    Inductive proof : ctx -> jdg -> Prop :=
+    (*
+      We need a context, a rule and an instanciation of this rule, that will give the conclusion
+    *)
+    | step (m : menv) (Γ : ctx) (r : rule) (x : r.(param)) :
+      (* The rule must be in the signature *)
+      In r (jsig.(rules)) ->
+      (* Satisfy all inductive premises *)
+      (
+        forall {n} (Δ : mctx 0 n) (j : mjdg n),
+        In (prem_ind Δ j) (r.(premises) x) ->
+        (eval_ctx m Δ ++ Γ) ⊢ eval_jdg m j
+      ) ->
+      (* (* Satisfy all leaf predicates, depending on Γ *)
+      (
+        forall P HP, In (prem_pred P HP) (r.(premises) x) ->
+        P Γ
+      ) -> *)
+      Γ ⊢ eval_jdg m (r.(conclusion) x)
+    | tvar (Γ : ctx) (n : nat) (A : term) :
+      Γ ∋ n : A ->
+      Γ ⊢ (E_var n, A) (* How to generalize this? *)
+    where "Γ ⊢ j" := (proof Γ j).
 
-  (*********************************************************************************)
-  (** *** "Typing" (hard coded for [ctx = list term] and [jdg = term*term]) of a renaming and a substitution *)
-  (*********************************************************************************)
+    Lemma conv_proof_j Γ j j' :
+      Γ ⊢ j ->
+      j = j' ->
+      Γ ⊢ j'.
+    Proof. intros; subst; assumption. Qed.
+    Lemma conv_proof_c Γ Γ' j :
+      Γ ⊢ j ->
+      Γ = Γ' ->
+      Γ' ⊢ j.
+    Proof. intros; subst; assumption. Qed.
+  End Derivation.
+  Notation "Γ ⊢ j" := (proof Γ j) (at level 70).
 
-  Reserved Notation "Δ ⊢s σ : Γ" (at level 70, σ at level 50).
-  Inductive styping : ctx -> subst -> ctx -> Prop :=
-  | styping_empty Δ σ :
-    Δ ⊢s σ : []
-  | styping_cons Δ σ Γ A :
-    Δ ⊢s rscomp rshift σ : Γ ->
-    Δ ⊢ ((σ 0), substitute (rscomp rshift σ) A) ->
-    Δ ⊢s σ : A::Γ
-  where "Δ ⊢s σ : Γ " := (styping Δ σ Γ).
-  Lemma conv_styping Δ ρ ρ' Γ :
-    Δ ⊢s ρ : Γ ->
-    ρ = ρ' ->
-    Δ ⊢s ρ' : Γ.
-  Proof. intros; subst; assumption. Qed.
+  (** Behaviour of renamings **)
+  Section Renamings.
+    (** Commutation between renaming and evaluation lemma **)
+    Lemma scoped_rename_eval {k} (n : nat) (t : mexpr k n) :
+      forall m ρ,
+      rename (up_rens n ρ) (eval m t) =
+      eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
+    Proof.
+      intros.
+      induction t in m, ρ |- *;
+      simpl in *;
+      rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
+      - f_equal.
+        apply up_rens_lt. assumption.
+      - rewrite ren_subst, subst_ren.
+        unfold srcomp, rscomp. apply substitute_proper. 2: reflexivity.
+        intro i. destruct (i <? lscope k) eqn:Hi.
+        + rewrite up_rens_lt.
+          (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
+          2: apply PeanoNat.Nat.ltb_lt; assumption.
+          rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
+          erewrite <- HI. 2: apply Hi. rewrite H.
+          reflexivity. assumption.
+        + rewrite PeanoNat.Nat.ltb_ge in Hi.
+          rewrite up_rens_gt. 2: lia.
+          match goal with
+          | |- _ = if ?b then _ else _ =>
+            assert (_H : b = false);
+            [idtac|rewrite _H]
+          end.
+          {apply PeanoNat.Nat.ltb_ge. lia. }
+          simpl. f_equal.
+          rewrite up_rens_gt. 2: lia.
+          replace (i - lscope k + s - s) with (i - lscope k) by lia.
+          lia.
+    Qed.
+    Corollary closed_rename_eval {k} (t : mexpr k 0) :
+      forall m ρ,
+      rename ρ (eval m t) =
+      eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
+    Proof. apply (scoped_rename_eval 0). Qed.
 
-  (*********************************************************************************)
-  (** *** Renaming lemmas *)
-  (*********************************************************************************)
-  Lemma rtyping_proper :
-    Proper (eq ==> eq1 ==> eq ==> Basics.impl) rtyping.
-  Proof.
-    intros Δ' Δ HΔ ρ ρ' Hρ Γ' Γ HΓ H; subst.
-    induction H in ρ', Hρ |- *; intros; constructor.
-    - apply IHrtyping. apply congr_rcomp. reflexivity. assumption.
-    - rewrite <- Hρ. assumption.
-  Qed.
-  Lemma conv_rtype_r Δ ρ ρ' Γ :
-    Δ ⊢r ρ : Γ ->
-    ρ =₁ ρ' ->
-    Δ ⊢r ρ' : Γ.
-  Proof.
-    intros Hρ Heq. Fail rewrite <- Heq.
-    eapply rtyping_proper. reflexivity. apply Heq. reflexivity. assumption.
-  Qed.
+    Lemma scoped_ctx_rename_eval {s n} (Γ : mctx s n) :
+      forall m ρ,
+      rename_ctx (up_rens s ρ) (eval_ctx m Γ) =
+      eval_ctx (fun k => rename (up_rens (lscope k) ρ) (m k)) Γ.
+    Proof.
+      induction Γ; intros; simpl.
+      - reflexivity.
+      - rewrite IHΓ. f_equal.
+        rewrite <- eval_length. rewrite <- scoped_rename_eval.
+        apply rename_proper. 2: reflexivity.
+        replace (scope + n) with (n + scope) by lia.
+        apply up_rens_add.
+    Qed.
 
-  Lemma rename_in Δ Γ ρ n A :
-    Γ ∋ n : A ->
-    Δ ⊢r ρ : Γ ->
-    Δ ∋ ρ n : rename ρ A.
-  Proof.
-    intros HΓ Hρ. induction HΓ in Δ, ρ, Hρ |- *; intros;
-    inversion Hρ; subst; rewrite ren_ren.
-    - assumption.
-    - eapply conv_in_n. apply IHHΓ. assumption.
-      reflexivity.
-  Qed.
+    Lemma scoped_jdg_rename_eval {s} (j : mjdg s) :
+      forall m ρ,
+      rename_jdg (up_rens s ρ) (eval_jdg m j) =
+      eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
+    Proof.
+      (* This should be made abstractly at some point I suppose *)
+      intros. destruct j as [t A]. unfold rename_jdg, eval_jdg, lift, LiftId in *.
+      simpl. rewrite func_comp.
+      unfold fmap, FMapProd, fmap, FMapId.
+      f_equal; try apply scoped_rename_eval.
+    Qed.
+    Corollary closed_jdg_rename_eval (j : mjdg 0) :
+      forall m ρ,
+      rename_jdg ρ (eval_jdg m j) =
+      eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
+    Proof. apply (@scoped_jdg_rename_eval 0). Qed.
 
-  Lemma rtyping_comp Γ Δ Θ ρ ρ' :
-    Δ ⊢r ρ : Γ ->
-    Θ ⊢r ρ' : Δ ->
-    Θ ⊢r rcomp ρ ρ' : Γ.
-  Proof.
-    intros Hρ Hρ'. induction Hρ in Θ, ρ', Hρ' |- *; intros; constructor.
-    - eapply rtyping_proper. reflexivity. 2: reflexivity.
-      apply rcomp_assoc. apply IHHρ. assumption.
-    - eapply conv_in_t. unfold rcomp. eapply rename_in. apply H. assumption.
-      rewrite ren_ren, rcomp_assoc. reflexivity.
-  Qed.
+    (** Typing of a renaming **)
+    Reserved Notation "Δ ⊢r ρ : Γ" (at level 70, ρ at level 50).
+    Inductive rtyping : ctx -> ren -> ctx -> Prop :=
+    | rtyping_empty Δ ρ :
+      Δ ⊢r ρ : []
+    | rtyping_cons Δ ρ Γ A :
+      Δ ⊢r rcomp rshift ρ : Γ ->
+      Δ ∋ (ρ 0) : rename (rcomp rshift ρ) A ->
+      Δ ⊢r ρ : A::Γ
+    where "Δ ⊢r ρ : Γ " := (rtyping Δ ρ Γ).
+    Lemma conv_rtyping Δ ρ ρ' Γ :
+      Δ ⊢r ρ : Γ ->
+      ρ = ρ' ->
+      Δ ⊢r ρ' : Γ.
+    Proof. intros; subst; assumption. Qed.
 
-  Lemma weaken_rtyping Γ ρ Δ A :
-    Δ ⊢r ρ : Γ ->
-    A::Δ ⊢r rcomp ρ S : Γ.
-  Proof.
-    intros Hρ. induction Hρ in A |- *; intros; constructor.
-    - apply IHHρ.
-    - eapply conv_in_t. constructor. apply H.
-      rewrite ren_ren, rcomp_assoc. reflexivity.
-  Qed.
+    (** Renaming lemmas **)
+    #[export] Instance rtyping_proper :
+      Proper (eq ==> eq1 ==> eq ==> Basics.impl) rtyping.
+    Proof.
+      intros Δ' Δ HΔ ρ ρ' Hρ Γ' Γ HΓ H; subst.
+      induction H in ρ', Hρ |- *; intros; constructor.
+      - apply IHrtyping. apply congr_rcomp. reflexivity. assumption.
+      - rewrite <- Hρ. assumption.
+    Qed.
+    Lemma conv_rtype_r Δ ρ ρ' Γ :
+      Δ ⊢r ρ : Γ ->
+      ρ =₁ ρ' ->
+      Δ ⊢r ρ' : Γ.
+    Proof. intros Hρ Heq. rewrite <- Heq. assumption. Qed.
 
-  Lemma up_rtyping Γ ρ Δ A :
-    Δ ⊢r ρ : Γ ->
-    (rename ρ A)::Δ ⊢r up_ren ρ : A::Γ.
-  Proof.
-    intros Hρ. constructor.
-    - apply weaken_rtyping. assumption.
-    - eapply conv_in_t. simpl. constructor.
-      rewrite ren_ren. reflexivity.
-  Qed.
+    Lemma rename_in Δ Γ ρ n A :
+      Γ ∋ n : A ->
+      Δ ⊢r ρ : Γ ->
+      Δ ∋ ρ n : rename ρ A.
+    Proof.
+      intros HΓ Hρ. induction HΓ in Δ, ρ, Hρ |- *; intros;
+      inversion Hρ; subst; rewrite ren_ren.
+      - assumption.
+      - eapply conv_in_n. apply IHHΓ. assumption.
+        reflexivity.
+    Qed.
 
-  Corollary up_rtyping_n Γ ρ Δ Θ :
-    Δ ⊢r ρ : Γ ->
-    (rename_ctx ρ Θ) ++ Δ ⊢r up_rens (Datatypes.length Θ) ρ : Θ ++ Γ.
-  Proof.
-    induction Θ in Γ, ρ, Δ |- *; intros; simpl in *.
-    - assumption.
-    - apply up_rtyping.
-      apply IHΘ. assumption.
-  Qed.
+    Lemma rtyping_comp Γ Δ Θ ρ ρ' :
+      Δ ⊢r ρ : Γ ->
+      Θ ⊢r ρ' : Δ ->
+      Θ ⊢r rcomp ρ ρ' : Γ.
+    Proof.
+      intros Hρ Hρ'. induction Hρ in Θ, ρ', Hρ' |- *; intros; constructor.
+      - eapply rtyping_proper. reflexivity. 2: reflexivity.
+        apply rcomp_assoc. apply IHHρ. assumption.
+      - eapply conv_in_t. unfold rcomp. eapply rename_in. apply H. assumption.
+        rewrite ren_ren, rcomp_assoc. reflexivity.
+    Qed.
 
-  Lemma id_rtyping Γ :
-    Γ ⊢r rid : Γ.
-  Proof.
-    induction Γ. constructor.
-    replace a with (rename rid a) at 1 by apply ren_rid.
-    Fail rewrite <- up_ren_rid.
-    eapply conv_rtype_r.
-    - apply up_rtyping. assumption.
-    - apply up_ren_rid.
-  Qed.
+    Lemma weaken_rtyping Γ ρ Δ A :
+      Δ ⊢r ρ : Γ ->
+      A::Δ ⊢r rcomp ρ S : Γ.
+    Proof.
+      intros Hρ. induction Hρ in A |- *; intros; constructor.
+      - apply IHHρ.
+      - eapply conv_in_t. constructor. apply H.
+        rewrite ren_ren, rcomp_assoc. reflexivity.
+    Qed.
 
-  Theorem preserve_renaming Γ j Δ ρ :
-    Γ ⊢ j ->
-    Δ ⊢r ρ : Γ ->
-    Δ ⊢ rename_jdg ρ j.
-  Proof.
-    intros Hj Hρ.
-    induction Hj in Δ, ρ, Hρ |- *.
-    (* We apply rule [r x] *)
-    eapply conv_proof_j.
-    unshelve econstructor.
-    shelve.
-    exact r. exact x.
-    assumption.
-    2: {symmetry. apply closed_jdg_rename_eval. }
-    (* Case of an inductive premise *)
-    - intros.
-      rewrite <- scoped_jdg_rename_eval. eapply H1. apply H2.
-      rewrite <- scoped_ctx_rename_eval. simpl.
-      eapply conv_rtyping.
-      eapply up_rtyping_n. assumption.
-      f_equal. symmetry. apply eval_length.
-    (* (* Case of a predicate premise *)
-    - intros.
-      eapply HP. 2: apply Hρ. eapply H2. apply H3. *)
-    (* Case of a variable *)
-    - unfold rename_jdg, fmap, FMapProd, fmap, FMapId.
-      constructor. eapply rename_in. apply H. assumption.
-  Qed.
+    Lemma up_rtyping Γ ρ Δ A :
+      Δ ⊢r ρ : Γ ->
+      (rename ρ A)::Δ ⊢r up_ren ρ : A::Γ.
+    Proof.
+      intros Hρ. constructor.
+      - apply weaken_rtyping. assumption.
+      - eapply conv_in_t. simpl. constructor.
+        rewrite ren_ren. reflexivity.
+    Qed.
 
-  Corollary weaken_typing Γ j A :
-    Γ ⊢ j ->
-    A::Γ ⊢ rename_jdg rshift j.
-  Proof.
-    intro.
-    eapply preserve_renaming. apply H.
-    apply weaken_rtyping. apply id_rtyping.
-  Qed.
+    Corollary up_rtyping_n Γ ρ Δ Θ :
+      Δ ⊢r ρ : Γ ->
+      (rename_ctx ρ Θ) ++ Δ ⊢r up_rens (Datatypes.length Θ) ρ : Θ ++ Γ.
+    Proof.
+      induction Θ in Γ, ρ, Δ |- *; intros; simpl in *.
+      - assumption.
+      - apply up_rtyping.
+        apply IHΘ. assumption.
+    Qed.
 
-  (* Substitution *)
+    Lemma id_rtyping Γ :
+      Γ ⊢r rid : Γ.
+    Proof.
+      induction Γ. constructor.
+      replace a with (rename rid a) at 1 by apply ren_rid.
+      rewrite <- up_ren_rid at 2. apply up_rtyping. assumption.
+    Qed.
 
-  Lemma ren_is_subst {k} r (t : expr k) :
-    rename r t = substitute (fun i => E_var (r i)) t.
-  Proof.
-    induction t in r |- *; simpl;
-    rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
-    f_equal. apply substitute_proper. 2: reflexivity.
-    intros [|n]; simpl. reflexivity.
-    unfold rcomp, rshift, srcomp. simpl. reflexivity.
-  Qed.
+    Theorem preserve_renaming Γ j Δ ρ :
+      Γ ⊢ j ->
+      Δ ⊢r ρ : Γ ->
+      Δ ⊢ rename_jdg ρ j.
+    Proof.
+      intros Hj Hρ.
+      induction Hj in Δ, ρ, Hρ |- *.
+      (* We apply rule [r x] *)
+      eapply conv_proof_j.
+      unshelve econstructor.
+      shelve.
+      exact r. exact x.
+      assumption.
+      2: {symmetry. apply closed_jdg_rename_eval. }
+      (* Case of an inductive premise *)
+      - intros.
+        rewrite <- scoped_jdg_rename_eval. eapply H1. apply H2.
+        rewrite <- scoped_ctx_rename_eval. simpl.
+        eapply conv_rtyping.
+        eapply up_rtyping_n. assumption.
+        f_equal. symmetry. apply eval_length.
+      (* (* Case of a predicate premise *)
+      - intros.
+        eapply HP. 2: apply Hρ. eapply H2. apply H3. *)
+      (* Case of a variable *)
+      - unfold rename_jdg, fmap, FMapProd, fmap, FMapId.
+        constructor. eapply rename_in. apply H. assumption.
+    Qed.
 
-  Lemma scoped_substitute_eval {k} (n : nat) (t : mexpr k n) :
-    forall m σ,
-    substitute (up_substs n σ) (eval m t) =
-    eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
-  Proof.
-    intros.
-    induction t in m, σ |- *;
-    simpl in *;
-    rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
-    - apply up_substs_lt. assumption.
-    - rewrite 2!subst_subst.
-      unfold scomp. apply substitute_proper. 2: reflexivity.
-      intro i. destruct (i <? lscope k) eqn:Hi.
-      + rewrite up_substs_lt.
-        (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
-        2: apply PeanoNat.Nat.ltb_lt; assumption. simpl.
-        rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
-        erewrite <- HI. 2: apply Hi. apply H. assumption.
-      + rewrite PeanoNat.Nat.ltb_ge in Hi.
-        simpl.
-        rewrite !up_substs_gt. 2: lia. 2: lia.
-        rewrite subst_ren.
-        rewrite ren_is_subst.
-        apply substitute_proper.
-        2: {f_equal. lia. }
-        intro j. unfold rscomp.
-        match goal with
-        | |- _ = if ?b then _ else _ =>
-          assert (_H : b = false);
-          [idtac|rewrite _H]
-        end.
-        {apply PeanoNat.Nat.ltb_ge. lia. }
-        f_equal. lia.
-  Qed.
-  Corollary closed_substitute_eval {k} (t : mexpr k 0) :
-    forall m σ,
-    substitute σ (eval m t) =
-    eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
-  Proof. apply (@scoped_substitute_eval _ 0). Qed.
+    Corollary weaken_typing Γ j A :
+      Γ ⊢ j ->
+      A::Γ ⊢ rename_jdg rshift j.
+    Proof.
+      intro.
+      eapply preserve_renaming. apply H.
+      apply weaken_rtyping. apply id_rtyping.
+    Qed.
+  End Renamings.
+  Notation "Δ ⊢r ρ : Γ" := (rtyping Δ ρ Γ) (at level 70, ρ at level 50).
 
-  Lemma scoped_ctx_substitute_eval {s n} (Γ : mctx s n) :
-    forall m σ,
-    subst_ctx (up_substs s σ) (eval_ctx m Γ) =
-    eval_ctx (fun k => substitute (up_substs (lscope k) σ) (m k)) Γ.
-  Proof.
-    induction Γ; intros; simpl.
-    - reflexivity.
-    - rewrite IHΓ. f_equal.
-      rewrite <- eval_length. rewrite <- scoped_substitute_eval.
-      apply substitute_proper. 2: reflexivity.
-      apply up_substs_add.
-  Qed.
+  (** Behaviour of substitutions **)
+  Section Substitutions.
 
-  Lemma scoped_jdg_substitute_eval {s} (j : mjdg s) :
-    forall m σ,
-    substitute_jdg (up_substs s σ) (eval_jdg m j) =
-    eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
-  Proof.
-    (* This should be made abstractly at some point I suppose *)
-    intros. destruct j as [t A]. unfold substitute_jdg, eval_jdg, lift, LiftId in *.
-    simpl. rewrite func_comp.
-    unfold fmap, FMapProd, fmap, FMapId.
-    f_equal; try apply scoped_substitute_eval.
-  Qed.
-  Corollary closed_jdg_substitute_eval (j : mjdg 0) :
-    forall m σ,
-    substitute_jdg σ (eval_jdg m j) =
-    eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
-  Proof. apply (@scoped_jdg_substitute_eval 0). Qed.
+    (* TODO : should be in ParamSyntax *)
+    Lemma ren_is_subst {k} r (t : expr k) :
+      rename r t = substitute (fun i => E_var (r i)) t.
+    Proof.
+      induction t in r |- *; simpl;
+      rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
+      f_equal. apply substitute_proper. 2: reflexivity.
+      intros [|n]; simpl. reflexivity.
+      unfold rcomp, rshift, srcomp. simpl. reflexivity.
+    Qed.
 
-  Lemma styping_proper :
-    Proper (eq ==> eq1 ==> eq ==> Basics.impl) styping.
-  Proof.
-    intros Δ' Δ HΔ σ σ' Hσ Γ' Γ HΓ H; subst.
-    induction H in σ', Hσ |- *; intros; constructor.
-    - apply IHstyping. apply rscomp_proper. reflexivity. assumption.
-    - rewrite <- Hσ. assumption.
-  Qed.
-  Lemma conv_stype_s Δ σ σ' Γ :
-    Δ ⊢s σ : Γ ->
-    σ =₁ σ' ->
-    Δ ⊢s σ' : Γ.
-  Proof.
-    intros Hσ Heq. Fail rewrite <- Heq.
-    eapply styping_proper. reflexivity. apply Heq. reflexivity. assumption.
-  Qed.
+    (** Commutation lemmas between substitution and evaluation **)
+    Lemma scoped_substitute_eval {k} (n : nat) (t : mexpr k n) :
+      forall m σ,
+      substitute (up_substs n σ) (eval m t) =
+      eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
+    Proof.
+      intros.
+      induction t in m, σ |- *;
+      simpl in *;
+      rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
+      - apply up_substs_lt. assumption.
+      - rewrite 2!subst_subst.
+        unfold scomp. apply substitute_proper. 2: reflexivity.
+        intro i. destruct (i <? lscope k) eqn:Hi.
+        + rewrite up_substs_lt.
+          (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
+          2: apply PeanoNat.Nat.ltb_lt; assumption. simpl.
+          rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
+          erewrite <- HI. 2: apply Hi. apply H. assumption.
+        + rewrite PeanoNat.Nat.ltb_ge in Hi.
+          simpl.
+          rewrite !up_substs_gt. 2: lia. 2: lia.
+          rewrite subst_ren.
+          rewrite ren_is_subst.
+          apply substitute_proper.
+          2: {f_equal. lia. }
+          intro j. unfold rscomp.
+          match goal with
+          | |- _ = if ?b then _ else _ =>
+            assert (_H : b = false);
+            [idtac|rewrite _H]
+          end.
+          {apply PeanoNat.Nat.ltb_ge. lia. }
+          f_equal. lia.
+    Qed.
+    Corollary closed_substitute_eval {k} (t : mexpr k 0) :
+      forall m σ,
+      substitute σ (eval m t) =
+      eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
+    Proof. apply (@scoped_substitute_eval _ 0). Qed.
 
-  Lemma substitute_in Δ Γ σ n A :
-    Γ ∋ n : A ->
-    Δ ⊢s σ : Γ ->
-    Δ ⊢ (σ n, substitute σ A).
-  Proof.
-    intros HΓ Hσ. induction HΓ in Δ, σ, Hσ |- *; intros;
-    inversion Hσ; subst; rewrite subst_ren.
-    - assumption.
-    - eapply conv_proof_j. apply IHHΓ. apply H3.
-      reflexivity.
-  Qed.
+    Lemma scoped_ctx_substitute_eval {s n} (Γ : mctx s n) :
+      forall m σ,
+      subst_ctx (up_substs s σ) (eval_ctx m Γ) =
+      eval_ctx (fun k => substitute (up_substs (lscope k) σ) (m k)) Γ.
+    Proof.
+      induction Γ; intros; simpl.
+      - reflexivity.
+      - rewrite IHΓ. f_equal.
+        rewrite <- eval_length. rewrite <- scoped_substitute_eval.
+        apply substitute_proper. 2: reflexivity.
+        apply up_substs_add.
+    Qed.
 
-  (* Lemma styping_comp Γ Δ Θ σ σ' :
-    Δ ⊢s σ : Γ ->
-    Θ ⊢s σ' : Δ ->
-    Θ ⊢s scomp σ σ' : Γ.
-  Proof.
-    intros Hσ Hσ'. induction Hσ in Θ, σ', Hσ' |- *; intros; constructor.
-    - eapply conv_stype_s.
-      apply IHHσ. apply Hσ'. reflexivity.
-    - eapply conv_proof_j. unfold rcomp. eapply rename_in. apply H. assumption.
-      rewrite ren_ren, rcomp_assoc. reflexivity.
-  Qed. *)
+    Lemma scoped_jdg_substitute_eval {s} (j : mjdg s) :
+      forall m σ,
+      substitute_jdg (up_substs s σ) (eval_jdg m j) =
+      eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
+    Proof.
+      (* This should be made abstractly at some point I suppose *)
+      intros. destruct j as [t A]. unfold substitute_jdg, eval_jdg, lift, LiftId in *.
+      simpl. rewrite func_comp.
+      unfold fmap, FMapProd, fmap, FMapId.
+      f_equal; try apply scoped_substitute_eval.
+    Qed.
+    Corollary closed_jdg_substitute_eval (j : mjdg 0) :
+      forall m σ,
+      substitute_jdg σ (eval_jdg m j) =
+      eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
+    Proof. apply (@scoped_jdg_substitute_eval 0). Qed.
 
-  Lemma weaken_styping Γ σ Δ A :
-    Δ ⊢s σ : Γ ->
-    A::Δ ⊢s srcomp σ S : Γ.
-  Proof.
-    intros Hσ. induction Hσ in A |- *; intros; constructor.
-    - apply IHHσ.
-    - eapply conv_proof_j. apply weaken_typing. apply H.
-      simpl. unfold fmap, FMapId.
-      rewrite ren_subst. reflexivity.
-  Qed.
+    (** Typing of a substitution **)
+    Reserved Notation "Δ ⊢s σ : Γ" (at level 70, σ at level 50).
+    Inductive styping : ctx -> subst -> ctx -> Prop :=
+    | styping_empty Δ σ :
+      Δ ⊢s σ : []
+    | styping_cons Δ σ Γ A :
+      Δ ⊢s rscomp rshift σ : Γ ->
+      Δ ⊢ ((σ 0), substitute (rscomp rshift σ) A) ->
+      Δ ⊢s σ : A::Γ
+    where "Δ ⊢s σ : Γ " := (styping Δ σ Γ).
+    Lemma conv_styping Δ ρ ρ' Γ :
+      Δ ⊢s ρ : Γ ->
+      ρ = ρ' ->
+      Δ ⊢s ρ' : Γ.
+    Proof. intros; subst; assumption. Qed.
 
-  Lemma up_styping Γ σ Δ A :
-    Δ ⊢s σ : Γ ->
-    (substitute σ A)::Δ ⊢s up_subst σ : A::Γ.
-  Proof.
-    intros Hσ. constructor.
-    - apply weaken_styping. assumption.
-    - simpl. constructor.
-      eapply conv_in_t. constructor.
-      rewrite ren_subst. reflexivity.
-  Qed.
+    (** Substitution lemmas **)
+    #[export] Instance styping_proper :
+      Proper (eq ==> eq1 ==> eq ==> Basics.impl) styping.
+    Proof.
+      intros Δ' Δ HΔ σ σ' Hσ Γ' Γ HΓ H; subst.
+      induction H in σ', Hσ |- *; intros; constructor.
+      - apply IHstyping. apply rscomp_proper. reflexivity. assumption.
+      - rewrite <- Hσ. assumption.
+    Qed.
+    Lemma conv_stype_s Δ σ σ' Γ :
+      Δ ⊢s σ : Γ ->
+      σ =₁ σ' ->
+      Δ ⊢s σ' : Γ.
+    Proof.
+      intros Hσ Heq. rewrite <- Heq. assumption.
+    Qed.
 
-  Corollary up_styping_n Γ σ Δ Θ :
-    Δ ⊢s σ : Γ ->
-    (subst_ctx σ Θ) ++ Δ ⊢s up_substs (Datatypes.length Θ) σ : Θ ++ Γ.
-  Proof.
-    induction Θ in Γ, σ, Δ |- *; intros; simpl in *.
-    - assumption.
-    - apply up_styping.
-      apply IHΘ. assumption.
-  Qed.
+    Lemma substitute_in Δ Γ σ n A :
+      Γ ∋ n : A ->
+      Δ ⊢s σ : Γ ->
+      Δ ⊢ (σ n, substitute σ A).
+    Proof.
+      intros HΓ Hσ. induction HΓ in Δ, σ, Hσ |- *; intros;
+      inversion Hσ; subst; rewrite subst_ren.
+      - assumption.
+      - eapply conv_proof_j. apply IHHΓ. apply H3.
+        reflexivity.
+    Qed.
 
-  Lemma id_styping Γ :
-    Γ ⊢s sid : Γ.
-  Proof.
-    induction Γ. constructor.
-    replace a with (substitute sid a) at 1 by apply subst_sid.
-    Fail rewrite <- up_subst_sid.
-    eapply conv_stype_s.
-    - apply up_styping. assumption.
-    - apply up_subst_sid.
-  Qed.
+    Lemma weaken_styping Γ σ Δ A :
+      Δ ⊢s σ : Γ ->
+      A::Δ ⊢s srcomp σ S : Γ.
+    Proof.
+      intros Hσ. induction Hσ in A |- *; intros; constructor.
+      - apply IHHσ.
+      - eapply conv_proof_j. apply weaken_typing. apply H.
+        simpl. unfold fmap, FMapId.
+        rewrite ren_subst. reflexivity.
+    Qed.
 
-  Theorem preserve_subst Γ j Δ σ :
-    Γ ⊢ j ->
-    Δ ⊢s σ : Γ ->
-    Δ ⊢ substitute_jdg σ j.
-  Proof.
-    intros Hj Hσ.
-    induction Hj in Δ, σ, Hσ |- *.
-    (* We apply rule [r x] *)
-    eapply conv_proof_j.
-    unshelve econstructor.
-    shelve.
-    exact r. exact x.
-    assumption.
-    2: {symmetry. apply closed_jdg_substitute_eval. }
-    (* Case of an inductive premise *)
-    - intros.
-      rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H2.
-      rewrite <- scoped_ctx_substitute_eval. simpl.
-      eapply conv_styping.
-      eapply up_styping_n. assumption.
-      f_equal. symmetry. apply eval_length.
-    (* (* Case of a predicate premise *)
-    - intros.
-      admit. *)
-    (* Case of a variable *)
-    - unfold substitute_jdg, fmap, FMapProd, fmap, FMapId.
-      eapply substitute_in. apply H. assumption.
-  Qed.
+    Lemma up_styping Γ σ Δ A :
+      Δ ⊢s σ : Γ ->
+      (substitute σ A)::Δ ⊢s up_subst σ : A::Γ.
+    Proof.
+      intros Hσ. constructor.
+      - apply weaken_styping. assumption.
+      - simpl. constructor.
+        eapply conv_in_t. constructor.
+        rewrite ren_subst. reflexivity.
+    Qed.
 
+    Corollary up_styping_n Γ σ Δ Θ :
+      Δ ⊢s σ : Γ ->
+      (subst_ctx σ Θ) ++ Δ ⊢s up_substs (Datatypes.length Θ) σ : Θ ++ Γ.
+    Proof.
+      induction Θ in Γ, σ, Δ |- *; intros; simpl in *.
+      - assumption.
+      - apply up_styping.
+        apply IHΘ. assumption.
+    Qed.
+
+    Lemma id_styping Γ :
+      Γ ⊢s sid : Γ.
+    Proof.
+      induction Γ. constructor.
+      replace a with (substitute sid a) at 1 by apply subst_sid.
+      rewrite <- up_subst_sid at 2. apply up_styping. assumption.
+    Qed.
+
+    Theorem preserve_subst Γ j Δ σ :
+      Γ ⊢ j ->
+      Δ ⊢s σ : Γ ->
+      Δ ⊢ substitute_jdg σ j.
+    Proof.
+      intros Hj Hσ.
+      induction Hj in Δ, σ, Hσ |- *.
+      (* We apply rule [r x] *)
+      eapply conv_proof_j.
+      unshelve econstructor.
+      shelve.
+      exact r. exact x.
+      assumption.
+      2: {symmetry. apply closed_jdg_substitute_eval. }
+      (* Case of an inductive premise *)
+      - intros.
+        rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H2.
+        rewrite <- scoped_ctx_substitute_eval. simpl.
+        eapply conv_styping.
+        eapply up_styping_n. assumption.
+        f_equal. symmetry. apply eval_length.
+      (* (* Case of a predicate premise *)
+      - intros.
+        admit. *)
+      (* Case of a variable *)
+      - unfold substitute_jdg, fmap, FMapProd, fmap, FMapId.
+        eapply substitute_in. apply H. assumption.
+    Qed.
+  End Substitutions.
+  Notation "Δ ⊢s σ : Γ" := (styping Δ σ Γ) (at level 70, σ at level 50).
 End WithSignature.
 Notation "Γ ∋ n : A" := (inctx Γ n A) (at level 70, n at level 50).
-Notation "Γ ⊢( s ) j" := (@proof _ s Γ j) (at level 70).
 Notation "Γ ⊢ j" := (proof Γ j) (at level 70).
 
 Notation "Δ ⊢r ρ : Γ" := (rtyping Δ ρ Γ) (at level 70, ρ at level 50).
 Notation "Δ ⊢s σ : Γ" := (styping Δ σ Γ) (at level 70, σ at level 50).
 
+(** Example section of Lambda Pi **)
 Section LambdaPi.
   (** Example of Lambda Pi **)
 
   Variant EBase := Nat.
   Variant CLamPi := CType | CApp | CLam | CPi.
 
-  Program Definition sig_lp : signature := {|
+  Derive NoConfusion for EBase.
+  Derive EqDec for EBase.
+  Derive NoConfusion for CLamPi.
+  Derive EqDec for CLamPi.
+
+  #[refine] Definition sig_lp : signature := {|
     base := EBase;
     eval_base := fun _ => nat;
     ctor := CLamPi;
@@ -828,17 +834,11 @@ Section LambdaPi.
     | CPi => [AT_term; AT_bind AT_term]
     end
   |}.
-  Next Obligation. destruct x, y; left; reflexivity. Qed.
-  Next Obligation.
-    destruct x, y; try (left; reflexivity); right; intro H; inversion H.
-  Qed.
+  Defined.
 
   #[local] Notation "'mterm'" := (@mexpr sig_lp Kt) (at level 0).
   #[local] Notation "'marg' ty" := (@mexpr sig_lp (Ka ty)) (at level 0, ty at level 0).
   #[local] Notation "'margs' tys" := (@mexpr sig_lp (Kal tys)) (at level 0, tys at level 0).
-
-  (* Overwrite the notation for lambda pi *)
-  Notation "Γ ∋ n : A" := (@inctx sig_lp Γ n A) (at level 70, n at level 50).
 
   (* λΠ constructors, written in a more accessible way *)
   Definition T {s} (n : nat) : mterm s :=
@@ -874,7 +874,7 @@ Section LambdaPi.
   Notation B := (scoped_mvar nB 1).
   Notation f := (scoped_mvar nf 0).
   Notation u := (scoped_mvar nu 0).
-  Notation "'Bu'" := (one_subst nB u).
+  Notation Bu := (one_subst nB u).
   Notation b := (scoped_mvar nb 1).
 
   Lemma B_Bu_mvar :
@@ -943,11 +943,15 @@ Section LambdaPi.
   ]|}.
 
   (* Overwrite notations for lambda pi *)
+  #[warnings="-notation-overridden"]
+  Notation "Γ ∋ n : A" := (@inctx sig_lp Γ n A) (at level 70, n at level 50).
+  #[warnings="-notation-overridden"]
   Notation "Γ ⊢ j" := (@proof _ typ_lampi Γ j) (at level 70).
+  #[warnings="-notation-overridden"]
   Notation "Δ ⊢r ρ : Γ" := (@rtyping sig_lp Δ ρ Γ) (at level 70, ρ at level 50).
+  #[warnings="-notation-overridden"]
   Notation "Δ ⊢s σ : Γ" := (@styping _ typ_lampi Δ σ Γ) (at level 70, σ at level 50).
 
-  (*It is absolutely horrible to use, obviously *)
   Definition elambda (t : P.expr Kt) : P.expr Kt :=
   @E_ctor sig_lp CLam (
     E_al_cons (E_abind (E_aterm t)) E_al_nil
@@ -965,21 +969,13 @@ Section LambdaPi.
     E_al_cons (E_aterm f) (E_al_cons (E_aterm u) E_al_nil)
   ).
 
-  Ltac destruct_n H :=
-  simpl in H;
-  match type of H with
-  | False => destruct H
-  | or _ _ => destruct H as [H|H]; [destruct_n H|destruct_n H]
-  | _ => idtac
-  end.
-
   Lemma proof_type_id n :
     [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
   Proof.
     pose (m := fun k =>
-      if (k.(index)=?nb) then (E_var 0)
-      else if (k.(index)=?nA) then (eT n)
-      else if (k.(index)=?nB) then (eT n)
+      if (k.(name)=?nb) then (E_var 0)
+      else if (k.(name)=?nA) then (eT n)
+      else if (k.(name)=?nB) then (eT n)
       else (default_menv k)
     ).
     eapply conv_proof_j.
@@ -987,8 +983,7 @@ Section LambdaPi.
     exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
     2: reflexivity.
     intros. destruct_n H.
-    inversion H; subst. clean_existT. clear H.
-    simpl. unfold fmap, FMapId. simpl.
+    noconf H. simpl. unfold fmap, FMapId. simpl.
     constructor. constructor.
   Qed.
 
@@ -996,10 +991,10 @@ Section LambdaPi.
     [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (eT n)).
   Proof.
     pose (m := fun k =>
-      if (k.(index)=?nf) then (elambda (E_var 0))
-      else if (k.(index)=?nu) then (E_var 0)
-      else if (k.(index)=?nA) then (eT n)
-      else if (k.(index)=?nB) then (eT n)
+      if (k.(name)=?nf) then (elambda (E_var 0))
+      else if (k.(name)=?nu) then (E_var 0)
+      else if (k.(name)=?nA) then (eT n)
+      else if (k.(name)=?nB) then (eT n)
       else (default_menv k)
     ).
     eapply conv_proof_j.
@@ -1007,7 +1002,7 @@ Section LambdaPi.
     exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
     2: reflexivity.
     intros. destruct_n H.
-    - inversion H. clean_existT. clean_existT. clear H.
+    - noconf H.
       simpl. unfold fmap, FMapId. simpl.
       epose (weaken_typing []).
       match goal with | |- _ ⊢ ?j =>
@@ -1016,7 +1011,7 @@ Section LambdaPi.
       simpl in p. unfold fmap, FMapId in p. simpl in p.
       apply p. clear p.
       apply proof_type_id.
-    - inversion H. clean_existT. clean_existT. clear H.
+    - noconf H.
       simpl. unfold fmap, FMapId. simpl. constructor.
       constructor.
   Qed.

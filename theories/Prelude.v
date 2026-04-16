@@ -32,11 +32,12 @@ Ltac split8 := split ; [|split7].
 
 (** Destruct n-ary disjunctions.  *)
 Ltac destruct_n H :=
-  match H with
-  | False => destruct H
-  | _ \/ _ => destruct H as [H|H]; [destruct_n H|destruct_n H]
-  | _ => idtac
-  end.
+simpl in H;
+match type of H with
+| False => destruct H
+| or _ _ => destruct H as [H|H]; [destruct_n H|destruct_n H]
+| _ => idtac
+end.
 
 (** On a hypothesis of the form [H : A -> B], this generates two goals:
     - the first asks to prove [A].
@@ -51,14 +52,3 @@ Ltac feed H :=
 Ltac feed2 H := feed H ; [| feed H].
 Ltac feed3 H := feed H ; [| feed2 H].
 Ltac feed4 H := feed H ; [| feed3 H].
-
-(** Get equalities from equality of [existT] *)
-Ltac clean_existT :=
-repeat (try
-match goal with
-| _H : existT _ _ _ = existT _ _ _ |- _ =>
-apply inj_pair2 in _H
-end
-); subst.
-(* Uses proof irrelevance... *)
-(* Print Assumptions inj_pair2. *)
