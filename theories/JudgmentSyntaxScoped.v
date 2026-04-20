@@ -227,7 +227,6 @@ Context {sig : signature}.
   (** Definitions of contexts **)
   (* Functor of declarations that will be stored in contexts *)
   Class DeclF := declF : Type -> Type.
-
   Context `{InstDeclF : DeclF}
     `{HFmapDecl : FMap declF}
     `{Hdecl : !Eq1Functor declF}.
@@ -863,9 +862,9 @@ Notation "Γ ⊢ j" := (proof Γ j) (at level 70).
 Notation "Δ ⊢r ρ : Γ" := (rtyping Δ ρ Γ) (at level 70, ρ at level 50).
 Notation "Δ ⊢s σ : Γ" := (styping Δ σ Γ) (at level 70, σ at level 50).
 
-(** Example section of Lambda Pi **)
-(* Might be better if it is in its own file? *)
-Section LambdaPi.
+(** Example module of conversion in lambda pi **)
+Module LPConv.
+  (* Syntax of lambda pi *)
   Variant EBase := Nat.
   Variant CLamPi := CType | CApp | CLam | CPi.
 
@@ -887,9 +886,9 @@ Section LambdaPi.
   |}.
   Defined.
 
-  #[local] Notation "'mterm'" := (@mexpr sig_lp Kt) (at level 0).
-  #[local] Notation "'marg' ty" := (@mexpr sig_lp (Ka ty)) (at level 0, ty at level 0).
-  #[local] Notation "'margs' tys" := (@mexpr sig_lp (Kal tys)) (at level 0, tys at level 0).
+  Notation "'mterm'" := (@mexpr sig_lp Kt) (at level 0).
+  Notation "'marg' ty" := (@mexpr sig_lp (Ka ty)) (at level 0, ty at level 0).
+  Notation "'margs' tys" := (@mexpr sig_lp (Kal tys)) (at level 0, tys at level 0).
 
   (* λΠ constructors, written in a more accessible way *)
   Definition T {s} (n : nat) : mterm s :=
@@ -915,103 +914,6 @@ Section LambdaPi.
   Definition Var {s} (n : nat) (Hs : n < s) : mterm s :=
   @M_var sig_lp s n Hs.
 
-  Definition nA := 0.
-  Definition nB := 1.
-  Definition nf := 2.
-  Definition nu := 3.
-  Definition nb := 4.
-
-  Notation A := (scoped_mvar nA 0).
-  Notation B := (scoped_mvar nB 1).
-  Notation f := (scoped_mvar nf 0).
-  Notation u := (scoped_mvar nu 0).
-  Notation Bu := (one_subst nB u).
-  Notation b := (scoped_mvar nb 1).
-
-  Lemma B_Bu_mvar :
-    forall k k' scopes scopes' Hs Hs' s s',
-    B = @M_mvar sig_lp 1 k scopes Hs s ->
-    Bu = @M_mvar sig_lp 0 k' scopes' Hs' s' ->
-    k = k'.
-  Proof.
-    intros.
-    inversion H. inversion H0. reflexivity.
-  Qed.
-
-  (* Typing rules *)
-  Instance LpDecl : DeclF := fun X => X.
-  Instance LpJdg : JdgF := fun X => (X*X)%type.
-  Instance LpMakeJdg : MakeJdg := fun X A t => (t, A).
-  (* Might be better to move it? *)
-  Instance LpNatMakeJdg : NatFromProd LpMakeJdg.
-  Proof.
-    constructor. intros. unfold fmap. simpl. reflexivity.
-  Qed.
-
-
-  Definition tType : rule :=
-  {|
-    premises := fun _ => [];
-    conclusion := fun n => (T(s:=0) n, T (S n))
-  |}.
-
-  (* Need to have something cleaner for msubst *)
-  Definition tPi : rule :=
-  {|
-    premises := fun '(n, m) =>
-    [
-      prem_ind
-        mnil
-        (A, T n) ;
-      prem_ind
-        (mcons(n:=0) A mnil)
-        (B, T m)
-    ] ;
-    conclusion := fun '(n, m) =>
-      (Pi A B, T (Nat.max n m))
-  |}.
-
-  Definition tApp : rule :=
-  {|
-    premises := fun (_ : unit) =>
-    [
-      prem_ind
-        mnil
-        (f, Pi A B);
-      prem_ind
-        mnil
-        (u, A)
-    ];
-    conclusion := fun _ =>
-      (App f u, Bu)
-  |}.
-
-  Definition tLam : rule :=
-  {|
-    premises := fun (_ : unit) =>
-    [
-      prem_ind
-        (mcons(n:=0) A mnil)
-        (b, B)
-    ];
-    conclusion := fun _ =>
-      (lambda b, Pi A B)
-  |}.
-
-  Definition typ_lampi : jdg_sig := {|rules:=[
-    tType; tPi; tApp; tLam
-  ]|}.
-
-  (* Overwrite notations for lambda pi *)
-  #[warnings="-notation-overridden"]
-  Notation "Γ ∋ n : A" := (@inctx sig_lp Γ n A) (at level 70, n at level 50).
-  #[warnings="-notation-overridden"]
-  Notation "Γ ⊢ j" := (proof(jsig:=typ_lampi) Γ j) (at level 70).
-  #[warnings="-notation-overridden"]
-  Notation "Δ ⊢r ρ : Γ" := (rtyping(sig:=sig_lp) Δ ρ Γ) (at level 70, ρ at level 50).
-  #[warnings="-notation-overridden"]
-  Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_lampi) Δ σ Γ) (at level 70, σ at level 50).
-
   Definition elambda (t : P.expr Kt) : P.expr Kt :=
   @E_ctor sig_lp CLam (
     E_al_cons (E_abind (E_aterm t)) E_al_nil
@@ -1029,211 +931,6 @@ Section LambdaPi.
     E_al_cons (E_aterm f) (E_al_cons (E_aterm u) E_al_nil)
   ).
 
-  Lemma proof_type_id n :
-    [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
-  Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nb) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
-    ).
-    eapply conv_proof_j.
-    unshelve econstructor.
-    exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    noconf H. simpl.
-    eapply conv_proof_j. apply tvar. constructor.
-    reflexivity.
-  Qed.
-
-  Lemma proof_type_id_app n :
-    [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (eT n)).
-  Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nf) then (elambda (E_var 0))
-      else if (k.(name)=?nu) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
-    ).
-    eapply conv_proof_j.
-    unshelve econstructor.
-    exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    - noconf H.
-      simpl. unfold fmap, FMapId. simpl.
-      eapply conv_proof_j.
-      eapply (weaken_typing (jsig:=typ_lampi)).
-      apply (proof_type_id n).
-      reflexivity.
-      Unshelve.
-      + (* Typeclass Eq1Functor for declarations *)
-        typeclasses eauto.
-      + (* Typeclass Eq1Functor for judgments *)
-        Fail typeclasses eauto.
-        apply Eq1FProd; typeclasses eauto.
-      + typeclasses eauto.
-    - noconf H. simpl.
-      eapply conv_proof_j. apply tvar. constructor.
-      reflexivity.
-  Qed.
-End LambdaPi.
-
-(** Example section of simply typed lambda calculus **)
-Section SimplLambda.
-  Variant LamBase :=.
-  Variant CLamCalc := CLApp | CLLam.
-
-  Derive NoConfusion for LamBase.
-  Derive EqDec for LamBase.
-  Derive NoConfusion for CLamCalc.
-  Derive EqDec for CLamCalc.
-
-  #[refine] Definition sig_lam : signature := {|
-    base := LamBase;
-    eval_base := fun _ => False;
-    ctor := CLamCalc;
-    ctor_type := fun c => match c with
-    | CLApp => [AT_term; AT_term]
-    | CLLam => [AT_bind AT_term]
-    end
-  |}.
-  Defined.
-
-  #[local] Notation "'mterm'" := (@mexpr sig_lam Kt) (at level 0).
-  #[local] Notation "'marg' ty" := (@mexpr sig_lam (Ka ty)) (at level 0, ty at level 0).
-  #[local] Notation "'margs' tys" := (@mexpr sig_lam (Kal tys)) (at level 0, tys at level 0).
-
-  (* λΠ constructors, written in a more accessible way *)
-  Definition slambda {s} (t : mterm (S s)) : mterm s :=
-  @M_ctor sig_lam s CLLam (
-    M_al_cons s (M_abind s (M_aterm  (S s) t)) (M_al_nil s)
-  ).
-
-  Definition sApp {s} (f u : mterm s) : mterm s :=
-  @M_ctor sig_lam s CLApp (
-    M_al_cons s (M_aterm s f) (M_al_cons s (M_aterm s u) (M_al_nil s))
-  ).
-
-  Definition sVar {s} (n : nat) (Hs : n < s) : mterm s :=
-  @M_var sig_lam s n Hs.
-
-  Inductive sType :=
-  | sIota
-  | sArrow (A B : sType).
-
-  (* Definition of contexts and judments *)
-  Instance LamDecl : DeclF := fun _ => sType.
-  Instance LamJdg : JdgF := fun X => (X*sType)%type.
-  Instance LamMakeJdg : MakeJdg := fun X A t => (t, A).
-  Instance LamMakeJdgNat : NatFromProd LamMakeJdg.
-  Proof.
-    constructor. intros. reflexivity.
-  Qed.
-
-  (* Typing rules *)
-  (* TODO : nf, nu and nb are already defined in the section about λΠ ; it is not clean, change it at some point *)
-  Notation f := (scoped_mvar nf 0).
-  Notation u := (scoped_mvar nu 0).
-  Notation b := (scoped_mvar nb 1).
-
-  Definition tsApp : rule :=
-  {|
-    premises := fun '(A, B) =>
-    [
-      prem_ind
-        mnil
-        (f, sArrow A B);
-      prem_ind
-        mnil
-        (u, A)
-    ];
-    conclusion := fun '(_, B) =>
-      (sApp f u, B)
-  |}.
-
-  Definition tsLam : rule :=
-  {|
-    premises := fun '(A, B) =>
-    [
-      prem_ind
-        (mcons(n:=0) A mnil)
-        (b, B)
-    ];
-    conclusion := fun '(A, B) =>
-      (slambda b, sArrow A B)
-  |}.
-
-  Definition typ_slam : jdg_sig := {|rules:=[tsApp; tsLam]|}.
-
-  (* Overwrite notations for lambda pi *)
-  #[warnings="-notation-overridden"]
-  Notation "Γ ∋ n : A" := (@inctx sig_lam Γ n A) (at level 70, n at level 50).
-  #[warnings="-notation-overridden"]
-  Notation "Γ ⊢ j" := (proof(jsig:=typ_slam) Γ j) (at level 70).
-  #[warnings="-notation-overridden"]
-  Notation "Δ ⊢r ρ : Γ" := (rtyping(sig:=sig_lam) Δ ρ Γ) (at level 70, ρ at level 50).
-  #[warnings="-notation-overridden"]
-  Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_slam) Δ σ Γ) (at level 70, σ at level 50).
-
-  (* Sanity check *)
-
-  Definition eslambda (t : P.expr Kt) : P.expr Kt :=
-  @E_ctor sig_lam CLLam (
-    E_al_cons (E_abind (E_aterm t)) E_al_nil
-  ).
-  Definition esApp (f u : P.expr Kt) : P.expr Kt :=
-  @E_ctor sig_lam CLApp (
-    E_al_cons (E_aterm f) (E_al_cons (E_aterm u) E_al_nil)
-  ).
-
-  Lemma proof_type_s_id :
-    [] ⊢ ((eslambda (E_var 0), sArrow sIota sIota)).
-  Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nb) then (E_var(sig:=sig_lam) 0)
-      else (default_menv k)
-    ).
-    eapply conv_proof_j.
-    unshelve econstructor.
-    exact m. exact tsLam. exact (sIota, sIota). repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    noconf H. simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
-    eapply conv_proof_j. apply tvar. constructor.
-    reflexivity.
-  Qed.
-
-  Lemma proof_type_s_id_app :
-    [sIota] ⊢ (esApp (eslambda (E_var 0)) (E_var 0), (sIota)).
-  Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nf) then (eslambda (E_var 0))
-      else if (k.(name)=?nu) then (E_var 0)
-      else (default_menv k)
-    ).
-    eapply conv_proof_j.
-    unshelve econstructor.
-    exact m. apply tsApp. exact (sIota, sIota). repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    - noconf H.
-      simpl.
-      eapply conv_proof_j.
-      eapply (weaken_typing (jsig:=typ_slam)).
-      apply (proof_type_s_id).
-      reflexivity.
-    - noconf H. simpl.
-      eapply conv_proof_j. apply tvar. constructor.
-      reflexivity.
-  Qed.
-End SimplLambda.
-
-(** Example section of conversion in lambda pi **)
-Section LPConv.
   (* Typing rules *)
   Instance LpConvDecl : DeclF := fun X => unit.
   Instance LpConvJdg : JdgF := fun X => (X*X)%type.
@@ -1241,7 +938,7 @@ Section LPConv.
   (* Might be better to move it? *)
   Instance LpConvNatMakeJdg : NatFromProd LpConvMakeJdg.
   Proof.
-    constructor. intros. reflexivity.
+    constructor. reflexivity.
   Qed.
 
   Definition conv_nA := 0.
@@ -1404,3 +1101,309 @@ Section LPConv.
     destruct_n H.
   Qed.
 End LPConv.
+
+(** Example module of typing of Lambda Pi **)
+Module LambdaPi.
+  #[warnings="-notation-overridden"] Import LPConv.
+
+  Definition nA := 0.
+  Definition nB := 1.
+  Definition nf := 2.
+  Definition nu := 3.
+  Definition nb := 4.
+
+  Notation A := (scoped_mvar nA 0).
+  Notation B := (scoped_mvar nB 1).
+  Notation f := (scoped_mvar nf 0).
+  Notation u := (scoped_mvar nu 0).
+  Notation Bu := (one_subst nB u).
+  Notation b := (scoped_mvar nb 1).
+
+  Lemma B_Bu_mvar :
+    forall k k' scopes scopes' Hs Hs' s s',
+    B = @M_mvar sig_lp 1 k scopes Hs s ->
+    Bu = @M_mvar sig_lp 0 k' scopes' Hs' s' ->
+    k = k'.
+  Proof.
+    intros.
+    inversion H. inversion H0. reflexivity.
+  Qed.
+
+  (* Typing rules *)
+  Instance LpDecl : DeclF := fun X => X.
+  Instance LpJdg : JdgF := fun X => (X*X)%type.
+  Instance LpMakeJdg : MakeJdg := fun X A t => (t, A).
+  Instance LpNatMakeJdg : NatFromProd LpMakeJdg.
+  Proof.
+    constructor. reflexivity.
+  Qed.
+
+
+  Definition tType : rule :=
+  {|
+    premises := fun _ => [];
+    conclusion := fun n => (T(s:=0) n, T (S n))
+  |}.
+
+  Definition tPi : rule :=
+  {|
+    premises := fun '(n, m) =>
+    [
+      prem_ind
+        mnil
+        (A, T n) ;
+      prem_ind
+        (mcons(n:=0) A mnil)
+        (B, T m)
+    ] ;
+    conclusion := fun '(n, m) =>
+      (Pi A B, T (Nat.max n m))
+  |}.
+
+  Definition tApp : rule :=
+  {|
+    premises := fun (_ : unit) =>
+    [
+      prem_ind
+        mnil
+        (f, Pi A B);
+      prem_ind
+        mnil
+        (u, A)
+    ];
+    conclusion := fun _ =>
+      (App f u, Bu)
+  |}.
+
+  Definition tLam : rule :=
+  {|
+    premises := fun (_ : unit) =>
+    [
+      prem_ind
+        (mcons(n:=0) A mnil)
+        (b, B)
+    ];
+    conclusion := fun _ =>
+      (lambda b, Pi A B)
+  |}.
+
+  Definition typ_lampi : jdg_sig := {|rules:=[
+    tType; tPi; tApp; tLam
+  ]|}.
+
+  (* Overwrite notations for lambda pi *)
+  #[warnings="-notation-overridden"]
+  Notation "Γ ∋ n : A" := (@inctx sig_lp Γ n A) (at level 70, n at level 50).
+  #[warnings="-notation-overridden"]
+  Notation "Γ ⊢ j" := (proof(jsig:=typ_lampi) Γ j) (at level 70).
+  #[warnings="-notation-overridden"]
+  Notation "Δ ⊢r ρ : Γ" := (rtyping(sig:=sig_lp) Δ ρ Γ) (at level 70, ρ at level 50).
+  #[warnings="-notation-overridden"]
+  Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_lampi) Δ σ Γ) (at level 70, σ at level 50).
+
+  Lemma proof_type_id n :
+    [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(name)=?nb) then (E_var 0)
+      else if (k.(name)=?nA) then (eT n)
+      else if (k.(name)=?nB) then (eT n)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
+    2: reflexivity.
+    intros. destruct_n H.
+    noconf H. simpl.
+    eapply conv_proof_j. apply tvar. constructor.
+    reflexivity.
+  Qed.
+
+  Lemma proof_type_id_app n :
+    [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (eT n)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(name)=?nf) then (elambda (E_var 0))
+      else if (k.(name)=?nu) then (E_var 0)
+      else if (k.(name)=?nA) then (eT n)
+      else if (k.(name)=?nB) then (eT n)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
+    2: reflexivity.
+    intros. destruct_n H.
+    - noconf H.
+      simpl. unfold fmap, FMapId. simpl.
+      eapply conv_proof_j.
+      eapply (weaken_typing (jsig:=typ_lampi)).
+      apply (proof_type_id n).
+      reflexivity.
+      Unshelve.
+      + (* Typeclass Eq1Functor for declarations *)
+        typeclasses eauto.
+      + (* Typeclass Eq1Functor for judgments *)
+        Fail typeclasses eauto.
+        apply Eq1FProd; typeclasses eauto.
+      + (* Typeclass NatFromProd for make_jdg *)
+        typeclasses eauto.
+    - noconf H. simpl.
+      eapply conv_proof_j. apply tvar. constructor.
+      reflexivity.
+  Qed.
+End LambdaPi.
+
+(** Example section of simply typed lambda calculus **)
+Module SimplLambda.
+  Variant EBase :=.
+  Variant CLamCalc := CApp | CLam.
+
+  Derive NoConfusion for EBase.
+  Derive EqDec for EBase.
+  Derive NoConfusion for CLamCalc.
+  Derive EqDec for CLamCalc.
+
+  #[refine] Definition sig_lam : signature := {|
+    base := EBase;
+    eval_base := fun _ => False;
+    ctor := CLamCalc;
+    ctor_type := fun c => match c with
+    | CApp => [AT_term; AT_term]
+    | CLam => [AT_bind AT_term]
+    end
+  |}.
+  Defined.
+
+  #[local] Notation "'mterm'" := (@mexpr sig_lam Kt) (at level 0).
+  #[local] Notation "'marg' ty" := (@mexpr sig_lam (Ka ty)) (at level 0, ty at level 0).
+  #[local] Notation "'margs' tys" := (@mexpr sig_lam (Kal tys)) (at level 0, tys at level 0).
+
+  (* λΠ constructors, written in a more accessible way *)
+  Definition lambda {s} (t : mterm (S s)) : mterm s :=
+  @M_ctor sig_lam s CLam (
+    M_al_cons s (M_abind s (M_aterm  (S s) t)) (M_al_nil s)
+  ).
+
+  Definition App {s} (f u : mterm s) : mterm s :=
+  @M_ctor sig_lam s CApp (
+    M_al_cons s (M_aterm s f) (M_al_cons s (M_aterm s u) (M_al_nil s))
+  ).
+
+  Definition Var {s} (n : nat) (Hs : n < s) : mterm s :=
+  @M_var sig_lam s n Hs.
+
+  Inductive sType :=
+  | sIota
+  | sArrow (A B : sType).
+
+  (* Definition of contexts and judments *)
+  Instance LamDecl : DeclF := fun _ => sType.
+  Instance LamJdg : JdgF := fun X => (X*sType)%type.
+  Instance LamMakeJdg : MakeJdg := fun X A t => (t, A).
+  Instance LamMakeJdgNat : NatFromProd LamMakeJdg.
+  Proof.
+    constructor. reflexivity.
+  Qed.
+
+  (* Typing rules *)
+  Definition nf := 0.
+  Definition nu := 1.
+  Definition nb := 2.
+
+  Notation f := (scoped_mvar nf 0).
+  Notation u := (scoped_mvar nu 0).
+  Notation b := (scoped_mvar nb 1).
+
+  Definition tApp : rule :=
+  {|
+    premises := fun '(A, B) =>
+    [
+      prem_ind
+        mnil
+        (f, sArrow A B);
+      prem_ind
+        mnil
+        (u, A)
+    ];
+    conclusion := fun '(_, B) =>
+      (App f u, B)
+  |}.
+
+  Definition tLam : rule :=
+  {|
+    premises := fun '(A, B) =>
+    [
+      prem_ind
+        (mcons(n:=0) A mnil)
+        (b, B)
+    ];
+    conclusion := fun '(A, B) =>
+      (lambda b, sArrow A B)
+  |}.
+
+  Definition typ_lam : jdg_sig := {|rules:=[tApp; tLam]|}.
+
+  (* Overwrite notations for lambda pi *)
+  #[warnings="-notation-overridden"]
+  Notation "Γ ∋ n : A" := (@inctx sig_lam Γ n A) (at level 70, n at level 50).
+  #[warnings="-notation-overridden"]
+  Notation "Γ ⊢ j" := (proof(jsig:=typ_lam) Γ j) (at level 70).
+  #[warnings="-notation-overridden"]
+  Notation "Δ ⊢r ρ : Γ" := (rtyping(sig:=sig_lam) Δ ρ Γ) (at level 70, ρ at level 50).
+  #[warnings="-notation-overridden"]
+  Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_lam) Δ σ Γ) (at level 70, σ at level 50).
+
+  (* Sanity check *)
+
+  Definition elambda (t : P.expr Kt) : P.expr Kt :=
+  @E_ctor sig_lam CLam (
+    E_al_cons (E_abind (E_aterm t)) E_al_nil
+  ).
+  Definition eApp (f u : P.expr Kt) : P.expr Kt :=
+  @E_ctor sig_lam CApp (
+    E_al_cons (E_aterm f) (E_al_cons (E_aterm u) E_al_nil)
+  ).
+
+  Lemma proof_type_id :
+    [] ⊢ ((elambda (E_var 0), sArrow sIota sIota)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(name)=?nb) then (E_var(sig:=sig_lam) 0)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. exact tLam. exact (sIota, sIota). repeat (try (left; reflexivity); right).
+    2: reflexivity.
+    intros. destruct_n H.
+    noconf H. simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
+    eapply conv_proof_j. apply tvar. constructor.
+    reflexivity.
+  Qed.
+
+  Lemma proof_type_id_app :
+    [sIota] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (sIota)).
+  Proof.
+    pose (m := fun k =>
+      if (k.(name)=?nf) then (elambda (E_var 0))
+      else if (k.(name)=?nu) then (E_var 0)
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. apply tApp. exact (sIota, sIota). repeat (try (left; reflexivity); right).
+    2: reflexivity.
+    intros. destruct_n H.
+    - noconf H.
+      simpl.
+      eapply conv_proof_j.
+      eapply (weaken_typing (jsig:=typ_lam)).
+      apply (proof_type_id).
+      reflexivity.
+    - noconf H. simpl.
+      eapply conv_proof_j. apply tvar. constructor.
+      reflexivity.
+  Qed.
+End SimplLambda.
