@@ -352,8 +352,7 @@ Context {sig : signature}.
   Section RulesSignature.
     (* Contexts in premises must be closed, and judgments must be scoped by the context *)
     Variant premise :=
-    (* | prem_pred (P : ctx -> Prop)
-      (HP : forall Δ ρ Γ, P Γ -> Δ ⊢r ρ : Γ -> P Δ) *)
+    | prem_pred (P : ctx -> menv -> Prop)
     | prem_ind {n} (Δ : mctx 0 n) (j : mjdg n).
     Derive NoConfusion for premise.
 
@@ -395,6 +394,11 @@ Context {sig : signature}.
         forall P HP, In (prem_pred P HP) (r.(premises) x) ->
         P Γ
       ) -> *)
+      Γ ⊢ eval_jdg m (r.(conclusion) x)
+    | tpred Γ m (r : rule) (x : r.(param)) P :
+      In r (jsig.(rules)) ->
+      In (prem_pred P) (r.(premises) x) ->
+      P Γ m ->
       Γ ⊢ eval_jdg m (r.(conclusion) x)
     | tvar (Γ : ctx) (n : nat) (d : declF term) :
       Γ ∋ n : d ->
@@ -503,6 +507,18 @@ Context {sig : signature}.
       Δ ⊢r ρ' : Γ.
     Proof. intros; subst; assumption. Qed.
 
+    (* Hypothesis to add to signatures for them to preserve renaming *)
+    Class RenJSig := {
+      prem_ren :
+      forall (r : rule) x P,
+      In r (jsig.(rules)) ->
+      In (prem_pred P) (r.(premises) x) ->
+      forall Γ ρ Δ m,
+      Δ ⊢r ρ : Γ ->
+      P Γ m ->
+      P Δ (fun k => rename (up_rens (lscope k) ρ) (m k))
+    }.
+
     (** Renaming lemmas **)
     #[export] Instance rtyping_proper :
       Proper (eq ==> eq1 ==> eq ==> Basics.impl) rtyping.
@@ -594,6 +610,8 @@ Context {sig : signature}.
       rewrite <- up_ren_rid at 2. apply up_rtyping. assumption.
     Qed.
 
+    Context {HRenSig : RenJSig}.
+
     Theorem preserve_renaming Γ j Δ ρ :
       Γ ⊢ j ->
       Δ ⊢r ρ : Γ ->
@@ -601,23 +619,28 @@ Context {sig : signature}.
     Proof.
       intros Hj Hρ.
       induction Hj in Δ, ρ, Hρ |- *.
-      (* We apply rule [r x] *)
-      eapply conv_proof_j.
-      unshelve econstructor.
-      shelve.
-      exact r. exact x.
-      assumption.
-      2: {symmetry. apply closed_jdg_rename_eval. }
       (* Case of an inductive premise *)
-      - intros.
+      - (* We apply rule [r x] *)
+        eapply conv_proof_j.
+        unshelve econstructor.
+        shelve.
+        exact r. exact x.
+        assumption.
+        2: {symmetry. apply closed_jdg_rename_eval. }
+        intros.
         rewrite <- scoped_jdg_rename_eval. eapply H1. apply H2.
         rewrite <- scoped_ctx_rename_eval. simpl.
         eapply conv_rtyping.
         eapply up_rtyping_n. assumption.
         f_equal. symmetry. apply eval_length.
-      (* (* Case of a predicate premise *)
-      - intros.
-        eapply HP. 2: apply Hρ. eapply H2. apply H3. *)
+      (* Case of a predicate premise *)
+      - (* We apply rule [r x] *)
+        eapply conv_proof_j.
+        unshelve eapply tpred.
+        shelve. exact r. exact x. exact P.
+        assumption. assumption.
+        2: {symmetry. apply closed_jdg_rename_eval. }
+        eapply HRenSig. apply H. apply H0. apply Hρ. assumption.
       (* Case of a variable *)
       - unfold rename_jdg.
         rewrite naturality_prod.
@@ -639,14 +662,34 @@ Context {sig : signature}.
   Section Substitutions.
 
     (* TODO : should be in ParamSyntax *)
+
+    Definition ren_to_subst (r : ren) : subst := fun i =>
+    E_var (r i).
+
     Lemma ren_is_subst {k} r (t : expr k) :
-      rename r t = substitute (fun i => E_var (r i)) t.
+      rename r t = substitute (ren_to_subst r) t.
     Proof.
       induction t in r |- *; simpl;
       rewrite ?IHt, ?IHt1, ?IHt2; try reflexivity.
       f_equal. apply substitute_proper. 2: reflexivity.
       intros [|n]; simpl. reflexivity.
       unfold rcomp, rshift, srcomp. simpl. reflexivity.
+    Qed.
+    Corollary ren_is_subst_jdg r (t : jdg) :
+      rename_jdg r t = substitute_jdg (ren_to_subst r) t.
+    Proof.
+      unfold rename_jdg, substitute_jdg. apply rew_eq1.
+      intro. apply ren_is_subst.
+    Qed.
+    Lemma ren_to_subst_up_rens n ρ :
+      ren_to_subst (up_rens n ρ) =₁ up_substs n (ren_to_subst ρ).
+    Proof.
+      intro k. induction n in ρ, k |- *; simpl.
+      reflexivity.
+      unfold ren_to_subst, up_subst. unfold scons. destruct k as [|k].
+      simpl. reflexivity. simpl. unfold srcomp, rshift.
+      etransitivity. 2: {eapply rename_proper. reflexivity. apply IHn. }
+      reflexivity.
     Qed.
 
     (** Commutation lemmas between substitution and evaluation **)
@@ -682,6 +725,7 @@ Context {sig : signature}.
             [idtac|rewrite _H]
           end.
           {apply PeanoNat.Nat.ltb_ge. lia. }
+          unfold ren_to_subst.
           f_equal. lia.
     Qed.
     Corollary closed_substitute_eval {k} (t : mexpr k 0) :
@@ -739,6 +783,48 @@ Context {sig : signature}.
       Δ ⊢s ρ' : Γ.
     Proof. intros; subst; assumption. Qed.
 
+    Lemma ren_to_subst_typing Γ ρ Δ :
+      Δ ⊢r ρ : Γ ->
+      Δ ⊢s ren_to_subst ρ : Γ.
+    Proof.
+      intro Hρ. induction Hρ.
+      - constructor.
+      - constructor. apply IHHρ.
+        constructor. eapply conv_in_d. apply H.
+        apply rew_eq1. intro i. apply ren_is_subst.
+    Qed.
+
+    (* Hypothesis to add to signatures for them to preserve substitution *)
+    Class SubstJSig := {
+      prem_subst :
+        forall (r : rule) x P,
+        In r (jsig.(rules)) ->
+        In (prem_pred P) (r.(premises) x) ->
+        forall Γ σ Δ m,
+        Δ ⊢s σ : Γ ->
+        P Γ m ->
+        P Δ (fun k => substitute (up_substs (lscope k) σ) (m k));
+
+      prem_pred_ext :
+        forall (r : rule) x P,
+        In r (jsig.(rules)) ->
+        In (prem_pred P) (r.(premises) x) ->
+        forall Γ m m',
+        P Γ m -> m =₁ m' -> P Γ m'
+    }.
+    (* Preserving substitutions implies preserving renamings via ren_is_subst *)
+    #[export] Instance SubstJdg_RenJdg : SubstJSig -> RenJSig.
+    Proof.
+      intro H.
+      constructor. intros.
+      eapply prem_pred_ext. apply H0. apply H1.
+      2: {intro k. rewrite <- ren_is_subst. reflexivity. }
+      eapply prem_pred_ext. apply H0. apply H1.
+      2: {intro k. rewrite ren_to_subst_up_rens. reflexivity. }
+      eapply prem_subst. apply H0. apply H1. 2: apply H3.
+      apply ren_to_subst_typing. assumption.
+    Qed.
+
     (** Substitution lemmas **)
     #[export] Instance styping_proper :
       Proper (eq ==> eq1 ==> eq ==> Basics.impl) styping.
@@ -775,6 +861,9 @@ Context {sig : signature}.
         rewrite func_comp. f_equal. apply rew_eq1. intro.
         rewrite subst_ren. reflexivity.
     Qed.
+
+    Context `{HSubstSig : SubstJSig}.
+
 
     Lemma weaken_styping Γ σ Δ d :
       Δ ⊢s σ : Γ ->
@@ -829,23 +918,27 @@ Context {sig : signature}.
     Proof.
       intros Hj Hσ.
       induction Hj in Δ, σ, Hσ |- *.
-      (* We apply rule [r x] *)
-      eapply conv_proof_j.
-      unshelve econstructor.
-      shelve.
-      exact r. exact x.
-      assumption.
-      2: {symmetry. apply closed_jdg_substitute_eval. }
       (* Case of an inductive premise *)
-      - intros.
+      - (* We apply rule [r x] *)
+        eapply conv_proof_j.
+        unshelve econstructor.
+        shelve.
+        exact r. exact x.
+        assumption.
+        2: {symmetry. apply closed_jdg_substitute_eval. }
+        intros.
         rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H2.
         rewrite <- scoped_ctx_substitute_eval. simpl.
         eapply conv_styping.
         eapply up_styping_n. assumption.
         f_equal. symmetry. apply eval_length.
-      (* (* Case of a predicate premise *)
-      - intros.
-        admit. *)
+      (* Case of a predicate premise *)
+      - eapply conv_proof_j.
+        unshelve eapply tpred.
+        shelve.
+        exact r. exact x. exact P. assumption. assumption.
+        2: {symmetry. apply closed_jdg_substitute_eval. }
+        eapply HSubstSig. apply H. apply H0. apply Hσ. assumption.
       (* Case of a variable *)
       - unfold substitute_jdg.
         rewrite naturality_prod.
@@ -861,6 +954,10 @@ Notation "Γ ⊢ j" := (proof Γ j) (at level 70).
 
 Notation "Δ ⊢r ρ : Γ" := (rtyping Δ ρ Γ) (at level 70, ρ at level 50).
 Notation "Δ ⊢s σ : Γ" := (styping Δ σ Γ) (at level 70, σ at level 50).
+
+Arguments SubstJSig {_ _ _ _ _ _} (_).
+Arguments RenJSig {_ _ _ _} (_).
+
 
 (** Example module of conversion in lambda pi **)
 Module LPConv.
@@ -1065,9 +1162,11 @@ Module LPConv.
   #[warnings="-notation-overridden"]
   Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_conv_lampi) Δ σ Γ) (at level 70, σ at level 50).
 
+  Notation "Γ ⊢ A ≡ B" := (proof(jsig:=typ_conv_lampi) Γ (A, B)) (at level 70).
+
   (* Sanity check *)
   Lemma beta_rev n :
-    [] ⊢ (eT n, eApp (elambda (E_var 0)) (eT n)).
+    [] ⊢ eT n ≡ eApp (elambda (E_var 0)) (eT n).
   Proof.
     (* Apply symmetry *)
     pose (msym := fun k =>
@@ -1100,6 +1199,10 @@ Module LPConv.
     (* No premise *)
     destruct_n H.
   Qed.
+
+  Instance LPConvSubst : SubstJSig typ_conv_lampi.
+  constructor; intros; destruct_n H; subst; destruct_n H0; inversion H0.
+  Qed.
 End LPConv.
 
 (** Example module of typing of Lambda Pi **)
@@ -1111,6 +1214,8 @@ Module LambdaPi.
   Definition nf := 2.
   Definition nu := 3.
   Definition nb := 4.
+  Definition nt := 5.
+  Definition nA' := 6.
 
   Notation A := (scoped_mvar nA 0).
   Notation B := (scoped_mvar nB 1).
@@ -1118,6 +1223,8 @@ Module LambdaPi.
   Notation u := (scoped_mvar nu 0).
   Notation Bu := (one_subst nB u).
   Notation b := (scoped_mvar nb 1).
+  Notation t := (scoped_mvar nt 0).
+  Notation A' := (scoped_mvar nA' 0).
 
   Lemma B_Bu_mvar :
     forall k k' scopes scopes' Hs Hs' s s',
@@ -1187,8 +1294,23 @@ Module LambdaPi.
       (lambda b, Pi A B)
   |}.
 
+  Definition tConv : rule :=
+  {|
+    premises := fun (_ : unit) =>
+    [
+      prem_ind
+        (mnil)
+        (t, A);
+      prem_pred (fun Γ m =>
+        map (fun _ => tt) Γ ⊢ eval m A ≡ eval m A'
+      )
+    ];
+    conclusion := fun _ =>
+      (t, A')
+  |}.
+
   Definition typ_lampi : jdg_sig := {|rules:=[
-    tType; tPi; tApp; tLam
+    tType; tPi; tApp; tLam; tConv
   ]|}.
 
   (* Overwrite notations for lambda pi *)
@@ -1200,6 +1322,52 @@ Module LambdaPi.
   Notation "Δ ⊢r ρ : Γ" := (rtyping(sig:=sig_lp) Δ ρ Γ) (at level 70, ρ at level 50).
   #[warnings="-notation-overridden"]
   Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_lampi) Δ σ Γ) (at level 70, σ at level 50).
+
+  Lemma typed_implies_refl Γ t A :
+    Γ ⊢ (t, A) ->
+    map (fun _ => tt) Γ ⊢ t ≡ t.
+  Proof.
+    (* I don't really want to do this proof with this formalism, and it is not very interresting for the example *)
+  Admitted.
+
+  Lemma styping_to_unit Δ σ Γ :
+    Δ ⊢s σ : Γ ->
+    styping(jsig:=typ_conv_lampi) (map (fun _ => tt) Δ) σ (map (fun _ => tt) Γ).
+  Proof.
+    intro Hσ. induction Hσ.
+    - constructor.
+    - simpl. constructor.
+      + apply IHHσ.
+      + unfold make_jdg, LpConvMakeJdg in *.
+        unfold LpMakeJdg in H. unfold fmap, FMapId in H.
+        eapply typed_implies_refl. apply H.
+  Qed.
+
+  (* This is the instance we need if we want to use preservation by substitution and renaming *)
+  Instance LPTypSubst : SubstJSig typ_lampi.
+    assert (Hi : (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid) by (intro; unfold sid; f_equal; lia).
+    constructor; intros; destruct_n H; subst; try destruct x; destruct_n H0; try inversion H0.
+    - subst.
+      (* Clean the context a bit *)
+      clear H0.
+      remember (m {|name := nA ; lscope := 0|}) as tA.
+      remember (m {|name := nA' ; lscope := 0|}) as tA'.
+      simpl.
+      rewrite Hi. rewrite 2!subst_sid.
+      rewrite Hi in H2. rewrite 2!subst_sid in H2.
+      (* Apply the theorem of preservation by substitution because the predicate is an inductive predicate that we already built *)
+      pose (preserve_subst(jsig:=typ_conv_lampi)).
+      specialize (p (map (fun _ => tt) Γ) (tA, tA')).
+      unfold substitute_jdg, fmap, FMapProd, fmap, FMapId in p.
+      apply p. apply H2.
+      (* We still need to show that :
+        [map (fun _ => tt) Γ ⊢s map (fun _ => tt) Δ]
+        This is a part that is more specific to the theory we built. We even [Admitted] a part of this proof that is not comfortable in this framework, and that is not useful for the example
+      *)
+      apply styping_to_unit. assumption.
+    - rewrite Hi. subst. rewrite Hi in H1. rewrite 2!subst_sid in *.
+      rewrite <- H2. assumption.
+  Qed.
 
   Lemma proof_type_id n :
     [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
@@ -1249,6 +1417,9 @@ Module LambdaPi.
         apply Eq1FProd; typeclasses eauto.
       + (* Typeclass NatFromProd for make_jdg *)
         typeclasses eauto.
+      + (* Typeclass RenJSig to use preservation by renaming *)
+        Fail typeclasses eauto.
+        apply SubstJdg_RenJdg; typeclasses eauto.
     - noconf H. simpl.
       eapply conv_proof_j. apply tvar. constructor.
       reflexivity.
@@ -1383,6 +1554,10 @@ Module SimplLambda.
     reflexivity.
   Qed.
 
+  Instance LambdaSubst : SubstJSig typ_lam.
+  constructor; intros; destruct_n H; subst; try destruct x; destruct_n H0; inversion H0.
+  Qed.
+
   Lemma proof_type_id_app :
     [sIota] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (sIota)).
   Proof.
@@ -1402,6 +1577,7 @@ Module SimplLambda.
       eapply (weaken_typing (jsig:=typ_lam)).
       apply (proof_type_id).
       reflexivity.
+      Unshelve.
     - noconf H. simpl.
       eapply conv_proof_j. apply tvar. constructor.
       reflexivity.
