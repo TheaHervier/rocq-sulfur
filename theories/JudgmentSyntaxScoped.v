@@ -389,16 +389,11 @@ Context {sig : signature}.
         In (prem_ind Δ j) (r.(premises) x) ->
         (eval_ctx m Δ ++ Γ) ⊢ eval_jdg m j
       ) ->
-      (* (* Satisfy all leaf predicates, depending on Γ *)
+      (* Satisfy all predicate premise, depending on Γ and m *)
       (
-        forall P HP, In (prem_pred P HP) (r.(premises) x) ->
-        P Γ
-      ) -> *)
-      Γ ⊢ eval_jdg m (r.(conclusion) x)
-    | tpred Γ m (r : rule) (x : r.(param)) P :
-      In r (jsig.(rules)) ->
-      In (prem_pred P) (r.(premises) x) ->
-      P Γ m ->
+        forall P, In (prem_pred P) (r.(premises) x) ->
+        P Γ m
+      ) ->
       Γ ⊢ eval_jdg m (r.(conclusion) x)
     | tvar (Γ : ctx) (n : nat) (d : declF term) :
       Γ ∋ n : d ->
@@ -619,28 +614,24 @@ Context {sig : signature}.
     Proof.
       intros Hj Hρ.
       induction Hj in Δ, ρ, Hρ |- *.
-      (* Case of an inductive premise *)
+      (* Case of an inductive/predicate premise *)
       - (* We apply rule [r x] *)
         eapply conv_proof_j.
         unshelve econstructor.
         shelve.
         exact r. exact x.
         assumption.
-        2: {symmetry. apply closed_jdg_rename_eval. }
-        intros.
-        rewrite <- scoped_jdg_rename_eval. eapply H1. apply H2.
-        rewrite <- scoped_ctx_rename_eval. simpl.
-        eapply conv_rtyping.
-        eapply up_rtyping_n. assumption.
-        f_equal. symmetry. apply eval_length.
-      (* Case of a predicate premise *)
-      - (* We apply rule [r x] *)
-        eapply conv_proof_j.
-        unshelve eapply tpred.
-        shelve. exact r. exact x. exact P.
-        assumption. assumption.
-        2: {symmetry. apply closed_jdg_rename_eval. }
-        eapply HRenSig. apply H. apply H0. apply Hρ. assumption.
+        3: {symmetry. apply closed_jdg_rename_eval. }
+        + (* Inductive premise *)
+          intros.
+          rewrite <- scoped_jdg_rename_eval. eapply H1. apply H3.
+          rewrite <- scoped_ctx_rename_eval. simpl.
+          eapply conv_rtyping.
+          eapply up_rtyping_n. assumption.
+          f_equal. symmetry. apply eval_length.
+        + (* Predicate premise *)
+          intros.
+          eapply HRenSig. apply H. apply H3. apply Hρ. apply H2. apply H3.
       (* Case of a variable *)
       - unfold rename_jdg.
         rewrite naturality_prod.
@@ -864,7 +855,6 @@ Context {sig : signature}.
 
     Context `{HSubstSig : SubstJSig}.
 
-
     Lemma weaken_styping Γ σ Δ d :
       Δ ⊢s σ : Γ ->
       d::Δ ⊢s srcomp σ S : Γ.
@@ -918,27 +908,24 @@ Context {sig : signature}.
     Proof.
       intros Hj Hσ.
       induction Hj in Δ, σ, Hσ |- *.
-      (* Case of an inductive premise *)
+      (* Case of an inductive/predicate premise *)
       - (* We apply rule [r x] *)
         eapply conv_proof_j.
         unshelve econstructor.
         shelve.
         exact r. exact x.
         assumption.
-        2: {symmetry. apply closed_jdg_substitute_eval. }
-        intros.
-        rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H2.
-        rewrite <- scoped_ctx_substitute_eval. simpl.
-        eapply conv_styping.
-        eapply up_styping_n. assumption.
-        f_equal. symmetry. apply eval_length.
-      (* Case of a predicate premise *)
-      - eapply conv_proof_j.
-        unshelve eapply tpred.
-        shelve.
-        exact r. exact x. exact P. assumption. assumption.
-        2: {symmetry. apply closed_jdg_substitute_eval. }
-        eapply HSubstSig. apply H. apply H0. apply Hσ. assumption.
+        3: {symmetry. apply closed_jdg_substitute_eval. }
+        + (* Inductive premise *)
+          intros.
+          rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H3.
+          rewrite <- scoped_ctx_substitute_eval. simpl.
+          eapply conv_styping.
+          eapply up_styping_n. assumption.
+          f_equal. symmetry. apply eval_length.
+        + (* Predicate premise *)
+          intros.
+          eapply HSubstSig. apply H. apply H3. apply Hσ. apply H2. assumption.
       (* Case of a variable *)
       - unfold substitute_jdg.
         rewrite naturality_prod.
@@ -1177,7 +1164,8 @@ Module LPConv.
     eapply conv_proof_j.
     unshelve econstructor.
     exact msym. exact tSym. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity.
+    3: reflexivity.
+    2: {intros. destruct_n H. inversion H. }
     intros. destruct_n H.
     noconf H. simpl.
     (* Just to avoid unfolding too much *)
@@ -1194,10 +1182,8 @@ Module LPConv.
     eapply conv_proof_j.
     unshelve econstructor.
     exact mbeta. exact tBeta. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity. (* This reflexivity means that the substitution was computed by itself! *)
-    intros.
-    (* No premise *)
-    destruct_n H.
+    3: reflexivity.
+    all: intros; destruct_n H.
   Qed.
 
   Instance LPConvSubst : SubstJSig typ_conv_lampi.
@@ -1343,9 +1329,13 @@ Module LambdaPi.
         eapply typed_implies_refl. apply H.
   Qed.
 
+  (* Something that appears multiple times, so making it a lemma might be useful *)
+  Lemma subst_minus_plus_zero :
+    (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid.
+  Proof. intro; unfold sid; f_equal; lia. Qed.
+
   (* This is the instance we need if we want to use preservation by substitution and renaming *)
   Instance LPTypSubst : SubstJSig typ_lampi.
-    assert (Hi : (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid) by (intro; unfold sid; f_equal; lia).
     constructor; intros; destruct_n H; subst; try destruct x; destruct_n H0; try inversion H0.
     - subst.
       (* Clean the context a bit *)
@@ -1353,8 +1343,8 @@ Module LambdaPi.
       remember (m {|name := nA ; lscope := 0|}) as tA.
       remember (m {|name := nA' ; lscope := 0|}) as tA'.
       simpl.
-      rewrite Hi. rewrite 2!subst_sid.
-      rewrite Hi in H2. rewrite 2!subst_sid in H2.
+      rewrite subst_minus_plus_zero. rewrite 2!subst_sid.
+      rewrite subst_minus_plus_zero in H2. rewrite 2!subst_sid in H2.
       (* Apply the theorem of preservation by substitution because the predicate is an inductive predicate that we already built *)
       pose (preserve_subst(jsig:=typ_conv_lampi)).
       specialize (p (map (fun _ => tt) Γ) (tA, tA')).
@@ -1365,7 +1355,8 @@ Module LambdaPi.
         This is a part that is more specific to the theory we built. We even [Admitted] a part of this proof that is not comfortable in this framework, and that is not useful for the example
       *)
       apply styping_to_unit. assumption.
-    - rewrite Hi. subst. rewrite Hi in H1. rewrite 2!subst_sid in *.
+    - rewrite subst_minus_plus_zero. subst.
+      rewrite subst_minus_plus_zero in H1. rewrite 2!subst_sid in *.
       rewrite <- H2. assumption.
   Qed.
 
@@ -1381,7 +1372,8 @@ Module LambdaPi.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. exact tLam. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity.
+    3: reflexivity.
+    2: intros; destruct_n H; noconf H.
     intros. destruct_n H.
     noconf H. simpl.
     eapply conv_proof_j. apply tvar. constructor.
@@ -1401,7 +1393,8 @@ Module LambdaPi.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. apply tApp. exact tt. repeat (try (left; reflexivity); right).
-    2: reflexivity.
+    3: reflexivity.
+    2: intros; destruct_n H; noconf H.
     intros. destruct_n H.
     - noconf H.
       simpl. unfold fmap, FMapId. simpl.
@@ -1424,6 +1417,36 @@ Module LambdaPi.
       eapply conv_proof_j. apply tvar. constructor.
       reflexivity.
   Qed.
+
+  Lemma proof_typee_id_app_lam n :
+    [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0),
+    eApp (elambda (E_var 0)) (eT n)).
+  Proof.
+    (* Use the conversion rule *)
+    pose (m := fun k =>
+      if (k.(name)=?nt) then (eApp (elambda (E_var 0)) (E_var 0))
+      else if (k.(name)=?nA) then (eT n)
+      else if (k.(name)=?nA') then (eApp (elambda (E_var 0)) (eT n))
+      else (default_menv k)
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor.
+    exact m. apply tConv. exact tt. repeat (try (left; reflexivity); right).
+    3: reflexivity.
+    - (* Inductive premise *)
+      intros. destruct_n H; noconf H.
+      unfold eval_jdg, eval_ctx, fmap, FMapProd, fmap, FMapId. simpl. apply proof_type_id_app.
+    - (* Predicate premise *)
+      intros. destruct_n H; noconf H.
+      rewrite subst_minus_plus_zero. rewrite 2! subst_sid.
+      simpl. unfold m. simpl.
+      (* Need to weaken the context *)
+      eapply conv_proof_j.
+      eapply (weaken_typing(jsig:=typ_conv_lampi)).
+      (* Here Rocq finds the typeclasses *)
+      apply (beta_rev n). reflexivity.
+  Qed.
+
 End LambdaPi.
 
 (** Example section of simply typed lambda calculus **)
@@ -1547,9 +1570,9 @@ Module SimplLambda.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. exact tLam. exact (sIota, sIota). repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    noconf H. simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
+    3: reflexivity.
+    all: intros; destruct_n H; noconf H.
+    simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
     eapply conv_proof_j. apply tvar. constructor.
     reflexivity.
   Qed.
@@ -1569,16 +1592,14 @@ Module SimplLambda.
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. apply tApp. exact (sIota, sIota). repeat (try (left; reflexivity); right).
-    2: reflexivity.
-    intros. destruct_n H.
-    - noconf H.
-      simpl.
+    3: reflexivity.
+    all: intros; destruct_n H; noconf H.
+    - simpl.
       eapply conv_proof_j.
       eapply (weaken_typing (jsig:=typ_lam)).
       apply (proof_type_id).
       reflexivity.
-      Unshelve.
-    - noconf H. simpl.
+    - simpl.
       eapply conv_proof_j. apply tvar. constructor.
       reflexivity.
   Qed.
