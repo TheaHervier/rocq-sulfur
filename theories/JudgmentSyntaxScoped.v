@@ -18,14 +18,15 @@ Section WithSignature.
   Unset Elimination Schemes.
 
   (* Meta variables *)
-  Record mvar := {
+  (* Record mvar := {
     (* Meta variables do not have binders, so we can use names easily. We use natural numbers for names *)
     name : nat;
 
     (* Local scope of a mvar, i.e. the number of terms that will be able to be substituted in this mvar *)
     lscope : nat
-  }.
+  }. *)
   (* NOTE : two meta variables with the same name but with different lscope are different meta variables. It is not problematic, but one need to keep that in mind when doing things *)
+  Definition mvar := nat.
 
 
   (** Terms over an abstract signature.
@@ -48,20 +49,10 @@ Section WithSignature.
     M_abind scope {ty} : marg ty (S scope) -> marg (AT_bind ty) scope
   | (**
     Meta variable applyed to a substitution
-    A substitution should be finite if we want to preserve scopeness.
-    The problem is that functions from integers are nice to use, and that substitutions in [ParamSyntax] are infinite.
-    In order to not do complicated conversions, we use the following data :
-      - A family [scopes] of scopes, such that [scopes i] is the scope of the [ith] term of the substitution
-      - A proof saying that all [lscope k] first elements of the substitution are of scope [scope]
-      - The substitutionn that is a function from natural numbers
-
-    Note that because of this, equality is not decidable on [mterms], and equality is not even the relation we should be interested in.
+    A substitution is a list of terms
     **)
-    M_mvar scope (k : mvar) :
-      (* For every index of the substitution, gives a scope *)
-      forall scopes : nat -> nat,
-      (forall i, i < lscope k -> scopes i = scope) ->
-      (forall i, mterm (scopes i)) -> mterm scope
+    M_mvar scope (k : mvar) (σ : list (mterm scope)) :
+      mterm scope
 
   where "'mterm'" := (mexpr Kt)
     and "'marg' ty" := (mexpr (Ka ty))
@@ -82,9 +73,9 @@ Section WithSignature.
     Context (H_abase : forall s b x, P _ _ (M_abase s b x)).
     Context (H_aterm : forall s t, P _ _ t -> P _ _ (M_aterm s t)).
     Context (H_abind : forall s ty (a : marg ty _), P _ _ a -> P _ _ (M_abind s a)).
-    Context (H_mvar : forall s k I HI σ,
-      (forall i, i < lscope k -> P _ _ (σ i)) ->
-      P _ _ (M_mvar s k I HI σ)
+    Context (H_mvar : forall s k σ,
+      Forall (P _ s) σ ->
+      P _ _ (M_mvar s k σ)
     ).
 
     Fixpoint mexpr_ind k s (t : mexpr k s) {struct t} : P k s t.
@@ -97,107 +88,63 @@ Section WithSignature.
     - apply H_abase.
     - apply H_aterm. apply mexpr_ind.
     - apply H_abind. apply mexpr_ind.
-    - apply H_mvar. intros. apply mexpr_ind.
+    - apply H_mvar.
+      (* I have to make an induction on σ, otherwise the Guard condition does not work. With the induction on σ, we are sure that the recursive calls are made on elements of σ, i.e. subterms *)
+      induction σ.
+      + apply Forall_nil.
+      + apply Forall_cons. apply mexpr_ind. apply IHσ.
     Qed.
 
   End MExprInd.
 
-  (** Substitution of meta variables **)
-  Section MetaSubst.
+  (** Utils for meta variables **)
+  Section UtilsMvar.
+    #[refine] Definition var n : mterm (S n) := M_var _ n _.
+    Proof. lia. Defined.
+  End UtilsMvar.
 
-    (**
-      We currify [msubst]s in [mexpr] so that it is easier to use when proving things on [mexpr]. The tradeoff is that it is slightly heavier when defining a concrete syntax (which in any case, should not be done by hand).
-      We describe a substitution of meta variable [msubst] with a record.
-    *)
-    Record msubst {k s} := {
-      (**
-        - k is the number of variables that will be substituted
-        - s is the scope of the substitution
-        When used, the type of the substitution is not important, only the objects matter
-      **)
-      scopes : nat -> nat;
-      Hscopes :
-        forall i : nat, i < k -> scopes i = s;
-      ms :
-        forall i : nat, mterm (scopes i)
-    }.
-    Arguments msubst : clear implicits.
+  (** Instantiation of an expression with meta variables into expressions without **)
+  Section Instantiation.
+    Definition menv := mvar -> nat -> P.expr Kt.
+    Definition default_menv : menv := fun k _ => E_var k.
 
-    (* Identity substitution of [k] meta terms, scoped by [k]. *)
-    #[refine] Definition msid (k : nat) : msubst k k := {|
-      scopes := fun i => if i <? k then k else S i;
-      ms := fun i => M_var _ i _
-    |}.
+    Equations inst {s k} (m : menv) (t : mexpr k s) : P.expr k :=
+    inst m (M_var _ i _) := E_var i ;
+    inst m (M_ctor _ c al) := E_ctor c (inst m al) ;
+    inst m (M_al_nil _) := E_al_nil ;
+    inst m (M_al_cons _ a al) := E_al_cons (inst m a) (inst m al) ;
+    inst m (M_abase _ b x) := E_abase b x ;
+    inst m (M_aterm _ t) := E_aterm (inst m t) ;
+
+    inst m (M_abind _ a) :=
+      (* We don't shift anything ; it is dealt with when instantiating a meta variable *)
+      E_abind (inst m a);
+    inst m (M_mvar _ k σ) :=
+      (* Again, I need this so that Rocq knows that the recursive call is made on elements of σ *)
+      let ev_σ := map (inst m) σ in
+      substitute
+        (fun i =>
+          match nth_error ev_σ i with
+          | Some t => t
+          (* [- List.length σ] shifts the indexes to take into account the substitution *)
+            (* [+ s] takes into account the scope, "the number of lambdas we are under" *)
+          | None => E_var (i - List.length σ + s)
+          end
+        )
+        (m k (List.length σ)).
+
+    Lemma map_proper :
+      forall X Y (l : list X) (f g : X -> Y), (Forall (fun t : X => f t = g t) l) ->
+      map f l = map g l.
     Proof.
-      - (* All of the interesting terms are scoped by k *)
-        intros. apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
-      - (* All the terms (here, variables) are well scoped by [scopes] *)
-        destruct (i <? k) eqn:Hi.
-        apply PeanoNat.Nat.ltb_lt. assumption.
-        lia.
-    Defined.
+      intros X Y l. induction l; intros.
+      - reflexivity.
+      - simpl. erewrite IHl. 2: {apply (Forall_inv_tail H). }
+        apply Forall_inv in H. rewrite H. reflexivity.
+    Qed.
 
-    (* Add a term to a substitution *)
-    #[refine] Definition mscons {k s : nat} (t : mterm s) (σ : msubst k s) : msubst (S k) s := {|
-      scopes := fun i => match i with
-      | 0 => s
-      | S i => (σ.(scopes) i)
-      end;
-
-      ms := fun i => match i with
-      | 0 => t
-      | S i => σ.(ms) i
-      end
-    |}.
-    Proof.
-      intros.
-      destruct i as [|i]. reflexivity.
-      apply Hscopes. lia.
-    Defined.
-
-    (* Meta variable applied to no substitution (i.e. identity) *)
-    #[refine] Definition scoped_mvar (name : nat) (s : nat) : mterm s :=
-      M_mvar s {|name:=name;lscope:=s|} (msid s).(scopes) _ (msid s).(ms).
-    Proof.
-      intros. simpl in *. apply PeanoNat.Nat.ltb_lt in H. rewrite H. reflexivity.
-    Defined.
-
-    (* Meta variable where we substitute the first variable by [t] ; can be generalized *)
-    #[refine] Definition one_subst (name : nat) (t : mterm 0) :=
-      M_mvar 0 {|name:=name;lscope:= 1|} (mscons t (msid 0)).(scopes) _ (mscons t (msid 0)).(ms).
-    Proof.
-      destruct i. reflexivity. simpl. lia.
-    Defined.
-  End MetaSubst.
-
-  (** Evaluation of an expression with meta variables into expressions without **)
-  Section Evaluation.
-    Definition menv := mvar -> P.expr Kt.
-    Definition default_menv : menv := fun k => E_var (name k).
-
-    Equations eval {s k} (m : menv) (t : mexpr k s) : P.expr k :=
-    eval m (M_var _ i _) := E_var i ;
-    eval m (M_ctor _ c al) := E_ctor c (eval m al) ;
-    eval m (M_al_nil _) := E_al_nil ;
-    eval m (M_al_cons _ a al) := E_al_cons (eval m a) (eval m al) ;
-    eval m (M_abase _ b x) := E_abase b x ;
-    eval m (M_aterm _ t) := E_aterm (eval m t) ;
-
-    eval m (M_abind _ a) :=
-      (* We don't shift anything ; it is dealt with when evaluating a meta variable *)
-      E_abind (eval m a);
-    eval m (M_mvar _ k _ _ σ) := substitute
-      (fun i =>
-        if i<?lscope k then
-          eval m (σ i)
-        else
-          (* [- lscope k] shifts the indexes to take into account the substitution *)
-          (* [+ s] takes into account the scope, "the number of lambdas we are under" *)
-          E_var (i - lscope k + s)
-      ) (m k).
-
-    #[export] Instance eval_proper_inst {k s} :
-      Proper (eq1 ==> eq ==> eq) (@eval s k).
+    #[export] Instance inst_proper_instance {k s} :
+      Proper (eq2 ==> eq ==> eq) (@inst s k).
     Proof.
       intros m m' Hm t' t Ht. subst.
       induction t in m, m', Hm |- *; simpl in *; intros.
@@ -210,19 +157,23 @@ Section WithSignature.
       - f_equal. apply IHt. setoid_rewrite Hm. reflexivity.
       - rewrite Hm.
         apply substitute_proper. 2: reflexivity.
-        intro i. destruct (i<?lscope k) eqn:Hi. 2: reflexivity.
-        apply H. 2: assumption.
-        apply PeanoNat.Nat.ltb_lt. assumption.
+        intro i.
+        erewrite map_proper.
+        2: {
+          eapply Forall_impl. 2: apply H.
+          intros. simpl in H0. apply H0. apply Hm.
+        } reflexivity.
     Qed.
 
-    Lemma eval_proper m m' :
-      m =₁ m' -> forall {k s} (t : mexpr k s),
-      eval m t = eval m' t.
+    Lemma inst_proper m m' :
+      m =₂ m' -> forall {k s} (t : mexpr k s),
+      inst m t = inst m' t.
     Proof.
       intros Hm k s t.
       rewrite Hm. reflexivity.
     Qed.
-  End Evaluation.
+  End Instantiation.
+  Notation "f =₂ g" := (eq2 f g) (at level 75).
 
   (** Definitions of contexts **)
   (* Functor of declarations that will be stored in contexts *)
@@ -242,13 +193,13 @@ Section WithSignature.
 
     Definition ctx := list (declF term).
 
-    Equations eval_ctx {s n} (m : menv) (Γ : mctx s n) : ctx :=
-    eval_ctx m mnil := [] ;
-    eval_ctx m (mcons d Γ) := (fmap declF (eval m) d)::(eval_ctx m Γ).
+    Equations inst_ctx {s n} (m : menv) (Γ : mctx s n) : ctx :=
+    inst_ctx m mnil := [] ;
+    inst_ctx m (mcons d Γ) := (fmap declF (inst m) d)::(inst_ctx m Γ).
 
-    (** Evaluation preserves length **)
-    Lemma eval_length {s n} (Γ : mctx s n) :
-      forall m, n = Datatypes.length (eval_ctx m Γ).
+    (** Instantiation preserves length **)
+    Lemma inst_length {s n} (Γ : mctx s n) :
+      forall m, n = Datatypes.length (inst_ctx m Γ).
     Proof.
       induction Γ; intros; simpl. reflexivity. f_equal. apply IHΓ.
     Qed.
@@ -326,7 +277,7 @@ Section WithSignature.
   Arguments mcons {_ scope}.
   Arguments inctx [_] {_}.
   Notation "Γ ∋ n : d" := (inctx Γ n d) (at level 70, n at level 50).
-  Arguments eval_ctx [_] {_ _ _}.
+  Arguments inst_ctx [_] {_ _ _}.
   Arguments rename_ctx [_] {_}.
   Arguments subst_ctx [_] {_}.
 
@@ -338,12 +289,12 @@ Section WithSignature.
     Definition mjdg (s : nat) := jdgF (mterm s).
     Definition jdg  := jdgF term.
 
-    (** Evaluating and renaming a judgment is much more straightforward **)
-    Definition eval_jdg {s} m : mjdg s -> jdg := fmap jdgF (eval m).
+    (** Instantiating and renaming a judgment is much more straightforward **)
+    Definition inst_jdg {s} m : mjdg s -> jdg := fmap jdgF (inst m).
     Definition rename_jdg ρ : jdg -> jdg := fmap jdgF (rename ρ).
     Definition substitute_jdg σ : jdg -> jdg := fmap jdgF (substitute σ).
   End Judgments.
-  Arguments eval_jdg [_] {_ _}.
+  Arguments inst_jdg [_] {_ _}.
   Arguments rename_jdg [_] {_}.
   Arguments substitute_jdg [_] {_}.
 
@@ -404,14 +355,14 @@ Section WithSignature.
       (
         forall i' {n} (Δ : mctx (declF i') 0 n) (j : mjdg (jdgF i') n) conv,
         In (prem_ind i i' conv Δ j) (r.(premises) x) ->
-        (eval_ctx m Δ ++ map conv Γ) ⊢(i') eval_jdg m j
+        (inst_ctx m Δ ++ map conv Γ) ⊢(i') inst_jdg m j
       ) ->
       (* Satisfy all predicate premise, depending on Γ and m *)
       (
         forall P, In (prem_pred i P) (r.(premises) x) ->
         P Γ m
       ) ->
-      Γ ⊢(i) eval_jdg m (r.(conclusion) x)
+      Γ ⊢(i) inst_jdg m (r.(conclusion) x)
     | tvar i (Γ : ctx (declF i)) (n : nat) (d : declF i term) :
       Γ ∋ n : d ->
       Γ ⊢(i) make_jdg i term d (E_var n)
@@ -432,11 +383,11 @@ Section WithSignature.
 
   (** Behaviour of renamings **)
   Section Renamings.
-    (** Commutation between renaming and evaluation lemma **)
-    Lemma scoped_rename_eval {k} (n : nat) (t : mexpr k n) :
+    (** Commutation between renaming and instantiation lemma **)
+    Lemma scoped_rename_inst {k} (n : nat) (t : mexpr k n) :
       forall m ρ,
-      rename (up_rens n ρ) (eval m t) =
-      eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
+      rename (up_rens n ρ) (inst m t) =
+      inst (fun k s => rename (up_rens s ρ) (m k s)) t.
     Proof.
       intros.
       induction t in m, ρ |- *;
@@ -446,62 +397,64 @@ Section WithSignature.
         apply up_rens_lt. assumption.
       - rewrite ren_subst, subst_ren.
         unfold srcomp, rscomp. apply substitute_proper. 2: reflexivity.
-        intro i. destruct (i <? lscope k) eqn:Hi.
-        + rewrite up_rens_lt.
-          (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
-          2: apply PeanoNat.Nat.ltb_lt; assumption.
-          rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
-          erewrite <- HI. 2: apply Hi. rewrite H.
-          reflexivity. assumption.
+        intro i.
+        destruct (i<? List.length σ) eqn: Hi.
+        + rewrite up_rens_lt. 2: apply PeanoNat.Nat.ltb_lt; assumption.
+          rewrite 2!nth_error_map.
+          apply PeanoNat.Nat.ltb_lt in Hi.
+          rewrite <- nth_error_Some in Hi.
+          destruct (nth_error σ i) as [t|] eqn:Hσ; simpl.
+          2: {exfalso. apply Hi. reflexivity. }
+          apply nth_error_In in Hσ. rewrite Forall_forall in H.
+          specialize (H _ Hσ).
+          apply H.
         + rewrite PeanoNat.Nat.ltb_ge in Hi.
-          rewrite up_rens_gt. 2: lia.
-          match goal with
-          | |- _ = if ?b then _ else _ =>
-            assert (_H : b = false);
-            [idtac|rewrite _H]
-          end.
-          {apply PeanoNat.Nat.ltb_ge. lia. }
-          simpl. f_equal.
-          rewrite up_rens_gt. 2: lia.
-          replace (i - lscope k + s - s) with (i - lscope k) by lia.
-          lia.
+          pose (Hσ := Hi).
+          apply nth_error_None in Hσ.
+          (* rewrite up_rens_gt. 2: lia. *)
+          rewrite 2!nth_error_map. rewrite Hσ. simpl.
+          assert (List.length σ <= up_rens (List.length σ) ρ i).
+          {rewrite up_rens_gt. 2: lia. lia. }
+          rewrite <- nth_error_None in H0. rewrite H0. simpl.
+          f_equal. rewrite up_rens_gt. 2: lia. rewrite up_rens_gt. 2: lia.
+          replace (i - List.length σ + s - s) with (i - List.length σ) by lia. lia.
     Qed.
-    Corollary closed_rename_eval {k} (t : mexpr k 0) :
+    Corollary closed_rename_inst {k} (t : mexpr k 0) :
       forall m ρ,
-      rename ρ (eval m t) =
-      eval (fun k => rename (up_rens (lscope k) ρ) (m k)) t.
-    Proof. apply (scoped_rename_eval 0). Qed.
+      rename ρ (inst m t) =
+      inst (fun k s => rename (up_rens s ρ) (m k s)) t.
+    Proof. apply (scoped_rename_inst 0). Qed.
 
-    Lemma scoped_ctx_rename_eval {i s n} (Γ : mctx (declF i) s n) :
+    Lemma scoped_ctx_rename_inst {i s n} (Γ : mctx (declF i) s n) :
       forall m ρ,
-      rename_ctx (up_rens s ρ) (eval_ctx m Γ) =
-      eval_ctx (fun k => rename (up_rens (lscope k) ρ) (m k)) Γ.
+      rename_ctx (up_rens s ρ) (inst_ctx m Γ) =
+      inst_ctx (fun k s => rename (up_rens s ρ) (m k s)) Γ.
     Proof.
       induction Γ; intros; simpl.
       - reflexivity.
       - rewrite IHΓ. f_equal.
-        rewrite <- eval_length.
+        rewrite <- inst_length.
         rewrite func_comp.
         apply rew_eq1. intro t.
-        rewrite <- scoped_rename_eval.
+        rewrite <- scoped_rename_inst.
         apply rename_proper. 2: reflexivity.
         apply up_rens_add.
     Qed.
 
-    Lemma scoped_jdg_rename_eval {i s} (j : mjdg (jdgF i) s) :
+    Lemma scoped_jdg_rename_inst {i s} (j : mjdg (jdgF i) s) :
       forall m ρ,
-      rename_jdg (up_rens s ρ) (eval_jdg m j) =
-      eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
+      rename_jdg (up_rens s ρ) (inst_jdg m j) =
+      inst_jdg (fun k s => rename (up_rens s ρ) (m k s)) j.
     Proof.
-      intros m ρ. unfold rename_jdg, eval_jdg.
+      intros m ρ. unfold rename_jdg, inst_jdg.
       rewrite func_comp. apply (rew_eq1(F:=jdgF i)).
-      intro t. apply scoped_rename_eval.
+      intro t. apply scoped_rename_inst.
     Qed.
-    Corollary closed_jdg_rename_eval {i} (j : mjdg (jdgF i) 0) :
+    Corollary closed_jdg_rename_inst {i} (j : mjdg (jdgF i) 0) :
       forall m ρ,
-      rename_jdg ρ (eval_jdg m j) =
-      eval_jdg (fun k => rename (up_rens (lscope k) ρ) (m k)) j.
-    Proof. apply (@scoped_jdg_rename_eval i 0). Qed.
+      rename_jdg ρ (inst_jdg m j) =
+      inst_jdg (fun k s => rename (up_rens s ρ) (m k s)) j.
+    Proof. apply (@scoped_jdg_rename_inst i 0). Qed.
 
     (** Typing of a renaming **)
     Reserved Notation "Δ ⊢r( i ) ρ : Γ" (at level 70, ρ at level 50, i at level 50).
@@ -533,7 +486,7 @@ Section WithSignature.
         forall Γ ρ Δ m,
         Δ ⊢r(i) ρ : Γ ->
         P Γ m ->
-        P Δ (fun k => rename (up_rens (lscope k) ρ) (m k)) ;
+        P Δ (fun k s => rename (up_rens s ρ) (m k s)) ;
 
       conv_nat_ren :
         forall (i : I) (r : rule i) x,
@@ -671,16 +624,16 @@ Section WithSignature.
         shelve.
         exact r. exact x.
         assumption.
-        3: {symmetry. apply closed_jdg_rename_eval. }
+        3: {symmetry. apply closed_jdg_rename_inst. }
         + (* Inductive premise *)
           intros.
-          rewrite <- scoped_jdg_rename_eval. eapply H1. apply H3.
-          rewrite <- scoped_ctx_rename_eval. simpl.
+          rewrite <- scoped_jdg_rename_inst. eapply H1. apply H3.
+          rewrite <- scoped_ctx_rename_inst. simpl.
           eapply conv_rtyping.
           eapply up_rtyping_n.
           apply rtyping_conv. eapply conv_nat_ren.
           apply H. apply H3. assumption.
-          f_equal. symmetry. apply eval_length.
+          f_equal. symmetry. apply inst_length.
         + (* Predicate premise *)
           intros.
           eapply HRenSig. apply H. apply H3. apply Hρ. apply H2. apply H3.
@@ -735,11 +688,11 @@ Section WithSignature.
       reflexivity.
     Qed.
 
-    (** Commutation lemmas between substitution and evaluation **)
-    Lemma scoped_substitute_eval {k} (n : nat) (t : mexpr k n) :
+    (** Commutation lemmas between substitution and instantiation **)
+    Lemma scoped_substitute_inst {k} (n : nat) (t : mexpr k n) :
       forall m σ,
-      substitute (up_substs n σ) (eval m t) =
-      eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
+      substitute (up_substs n σ) (inst m t) =
+      inst (fun k s => substitute (up_substs s σ) (m k s)) t.
     Proof.
       intros.
       induction t in m, σ |- *;
@@ -748,65 +701,72 @@ Section WithSignature.
       - apply up_substs_lt. assumption.
       - rewrite 2!subst_subst.
         unfold scomp. apply substitute_proper. 2: reflexivity.
-        intro i. destruct (i <? lscope k) eqn:Hi.
-        + rewrite up_substs_lt.
-          (* rewrite PeanoNat.Nat.ltb_lt in Hi. *)
-          2: apply PeanoNat.Nat.ltb_lt; assumption. simpl.
-          rewrite Hi. apply PeanoNat.Nat.ltb_lt in Hi.
-          erewrite <- HI. 2: apply Hi. apply H. assumption.
+        intro i.
+        destruct (i<? List.length σ0) eqn: Hi.
+        + rewrite up_substs_lt. 2: apply PeanoNat.Nat.ltb_lt; assumption. simpl.
+          rewrite 2!nth_error_map.
+          apply PeanoNat.Nat.ltb_lt in Hi.
+          rewrite <- nth_error_Some in Hi.
+          destruct (nth_error σ0 i) as [t|] eqn:Hσ; simpl.
+          2: {exfalso. apply Hi. reflexivity. }
+          apply nth_error_In in Hσ. rewrite Forall_forall in H.
+          specialize (H _ Hσ).
+          apply H.
         + rewrite PeanoNat.Nat.ltb_ge in Hi.
-          simpl.
-          rewrite !up_substs_gt. 2: lia. 2: lia.
+          pose (Hσ := Hi).
+          rewrite up_substs_gt. 2: lia.
+          (* apply nth_error_None in Hσ. *)
+          (* rewrite !up_substs_gt. 2: lia. *)
           rewrite subst_ren.
-          rewrite ren_is_subst.
-          apply substitute_proper.
-          2: {f_equal. lia. }
-          intro j. unfold rscomp.
-          match goal with
-          | |- _ = if ?b then _ else _ =>
-            assert (_H : b = false);
-            [idtac|rewrite _H]
-          end.
-          {apply PeanoNat.Nat.ltb_ge. lia. }
-          unfold ren_to_subst.
-          f_equal. lia.
+          unfold rscomp.
+          etransitivity. 2: {apply substitute_proper. 2: reflexivity.
+            intro i0. assert (List.length σ0 <= i0 + List.length σ0) by lia.
+            apply nth_error_None in H0.
+            rewrite nth_error_map.
+            rewrite H0. simpl. reflexivity.
+          }
+          apply nth_error_None in Hσ. rewrite nth_error_map. rewrite Hσ. simpl.
+          rewrite up_substs_gt. 2: lia.
+          rewrite ren_is_subst. apply substitute_proper.
+          2: f_equal; lia.
+          intro i0. unfold ren_to_subst. f_equal. lia.
     Qed.
-    Corollary closed_substitute_eval {k} (t : mexpr k 0) :
+    Corollary closed_substitute_inst {k} (t : mexpr k 0) :
       forall m σ,
-      substitute σ (eval m t) =
-      eval (fun k => substitute (up_substs (lscope k) σ) (m k)) t.
-    Proof. apply (@scoped_substitute_eval _ 0). Qed.
+      substitute σ (inst m t) =
+      inst (fun k s => substitute (up_substs s σ) (m k s)) t.
+    Proof. apply (@scoped_substitute_inst _ 0). Qed.
 
-    Lemma scoped_ctx_substitute_eval {i s n} (Γ : mctx (declF i) s n) :
+    Lemma scoped_ctx_substitute_inst {i s n} (Γ : mctx (declF i) s n) :
       forall m σ,
-      subst_ctx (up_substs s σ) (eval_ctx m Γ) =
-      eval_ctx (fun k => substitute (up_substs (lscope k) σ) (m k)) Γ.
+      subst_ctx (up_substs s σ) (inst_ctx m Γ) =
+      inst_ctx (fun k s => substitute (up_substs s σ) (m k s)) Γ.
     Proof.
       induction Γ; intros; simpl.
       - reflexivity.
       - rewrite IHΓ. f_equal.
-        rewrite <- eval_length.
+        rewrite <- inst_length.
         rewrite func_comp. apply rew_eq1. intro.
-        rewrite <- scoped_substitute_eval.
+        rewrite <- scoped_substitute_inst.
         apply substitute_proper. 2: reflexivity.
         apply up_substs_add.
     Qed.
 
-    Lemma scoped_jdg_substitute_eval {i s} (j : mjdg (jdgF i) s) :
+    Lemma scoped_jdg_substitute_inst {i s} (j : mjdg (jdgF i) s) :
       forall m σ,
-      substitute_jdg (up_substs s σ) (eval_jdg m j) =
-      eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
+      substitute_jdg (up_substs s σ) (inst_jdg m j) =
+      inst_jdg (fun k s => substitute (up_substs s σ) (m k s)) j.
     Proof.
-      intros m ρ. unfold substitute_jdg, eval_jdg.
+      intros m ρ. unfold substitute_jdg, inst_jdg.
       rewrite func_comp. apply (rew_eq1(F:=jdgF i)).
       intro t.
-      apply scoped_substitute_eval.
+      apply scoped_substitute_inst.
     Qed.
-    Corollary closed_jdg_substitute_eval {i} (j : mjdg (jdgF i) 0) :
+    Corollary closed_jdg_substitute_inst {i} (j : mjdg (jdgF i) 0) :
       forall m σ,
-      substitute_jdg σ (eval_jdg m j) =
-      eval_jdg (fun k => substitute (up_substs (lscope k) σ) (m k)) j.
-    Proof. apply (@scoped_jdg_substitute_eval i 0). Qed.
+      substitute_jdg σ (inst_jdg m j) =
+      inst_jdg (fun k s => substitute (up_substs s σ) (m k s)) j.
+    Proof. apply (@scoped_jdg_substitute_inst i 0). Qed.
 
     (** Typing of a substitution **)
     Reserved Notation "Δ ⊢s( i ) σ : Γ" (at level 70, σ at level 50).
@@ -852,14 +812,14 @@ Section WithSignature.
         forall Γ σ Δ m,
         Δ ⊢s(i) σ : Γ ->
         P Γ m ->
-        P Δ (fun k => substitute (up_substs (lscope k) σ) (m k));
+        P Δ (fun k s => substitute (up_substs s σ) (m k s));
 
       prem_pred_ext :
         forall i (r : rule i) x P,
         In r (jsig.(rules) i) ->
         In (prem_pred i P) (r.(premises) x) ->
         forall Γ m m',
-        P Γ m -> m =₁ m' -> P Γ m';
+        P Γ m -> m =₂ m' -> P Γ m';
 
       conv_nat_subst :
         forall (i : I) (r : rule i) x,
@@ -884,9 +844,9 @@ Section WithSignature.
       2: apply H.
       intros.
       eapply prem_pred_ext. apply H0. apply H1.
-      2: {intro k. rewrite <- ren_is_subst. reflexivity. }
+      2: {intros k s. rewrite <- ren_is_subst. reflexivity. }
       eapply prem_pred_ext. apply H0. apply H1.
-      2: {intro k. rewrite ren_to_subst_up_rens. reflexivity. }
+      2: {intros k s. etransitivity. 2: rewrite ren_to_subst_up_rens; reflexivity. reflexivity. }
       eapply prem_subst. apply H0. apply H1. 2: apply H3.
       apply ren_to_subst_typing. assumption.
     Qed.
@@ -1003,18 +963,18 @@ Section WithSignature.
         shelve.
         exact r. exact x.
         assumption.
-        3: {symmetry. apply closed_jdg_substitute_eval. }
+        3: {symmetry. apply closed_jdg_substitute_inst. }
         + (* Inductive premise *)
           intros.
-          rewrite <- scoped_jdg_substitute_eval. eapply H1. apply H3.
-          rewrite <- scoped_ctx_substitute_eval. simpl.
+          rewrite <- scoped_jdg_substitute_inst. eapply H1. apply H3.
+          rewrite <- scoped_ctx_substitute_inst. simpl.
           eapply conv_styping.
           eapply up_styping_n.
           apply styping_subst.
           eapply conv_nat_subst. apply H. apply H3.
           eapply conv_make_jdg. apply H. apply H3.
           assumption.
-          f_equal. symmetry. apply eval_length.
+          f_equal. symmetry. apply inst_length.
         + (* Predicate premise *)
           intros.
           eapply HSubstSig. apply H. apply H3. apply Hσ. apply H2. assumption.
@@ -1030,7 +990,7 @@ Arguments mnil {_ _ scope}.
 Arguments mcons {_ _ scope _}.
 Arguments inctx {_} [_] {_}.
 Notation "Γ ∋ n : d" := (inctx Γ n d) (at level 70, n at level 50).
-Arguments eval_ctx {_} [_] {_ _ _}.
+Arguments inst_ctx {_} [_] {_ _ _}.
 Arguments rename_ctx {_} [_] {_}.
 Arguments subst_ctx {_} [_] {_}.
 
@@ -1142,68 +1102,57 @@ Module LPConv.
     constructor. reflexivity.
   Qed.
 
-  Definition conv_nA := 0.
-  Definition conv_nB := 1.
-  Definition conv_nA' := 2.
-  Definition conv_nB' := 3.
-  Definition conv_nt := 4.
-  Definition conv_nu := 5.
-  Definition conv_nv := 6.
-  Definition conv_nt' := 7.
-  Definition conv_nu' := 8.
-  Definition conv_nv' := 9.
-  Definition conv_nb := 10.
-  Definition conv_nb' := 11.
+  Definition nA := 0.
+  Definition nB := 1.
+  Definition nA' := 2.
+  Definition nB' := 3.
+  Definition nt := 4.
+  Definition nu := 5.
+  Definition nv := 6.
+  Definition nt' := 7.
+  Definition nu' := 8.
+  Definition nv' := 9.
+  Definition nb := 10.
+  Definition nb' := 11.
 
-  Notation A := (scoped_mvar conv_nA 0).
-  Notation B := (scoped_mvar conv_nB 1).
-  Notation A' := (scoped_mvar conv_nA' 0).
-  Notation B' := (scoped_mvar conv_nB' 1).
-  Notation t := (scoped_mvar conv_nt 0).
-  Notation u := (scoped_mvar conv_nu 0).
-  Notation v := (scoped_mvar conv_nv 0).
-  Notation t' := (scoped_mvar conv_nt' 0).
-  Notation u' := (scoped_mvar conv_nu' 0).
-  Notation v' := (scoped_mvar conv_nv' 0).
-  Notation b := (scoped_mvar conv_nb 1).
-  Notation b' := (scoped_mvar conv_nb' 1).
-  Notation bu := (one_subst conv_nb u).
-
-  Lemma b_bu_mvar :
-    forall k k' scopes scopes' Hs Hs' s s',
-    b = @M_mvar sig_lp 1 k scopes Hs s ->
-    bu = @M_mvar sig_lp 0 k' scopes' Hs' s' ->
-    k = k'.
-  Proof.
-    intros.
-    inversion H. inversion H0. reflexivity.
-  Qed.
+  Definition A {s} := M_mvar(sig:=sig_lp) s nA.
+  Definition B {s} := M_mvar(sig:=sig_lp) s nB.
+  Definition A' {s} := M_mvar(sig:=sig_lp) s nA'.
+  Definition B' {s} := M_mvar(sig:=sig_lp) s nB'.
+  Definition t {s} := M_mvar(sig:=sig_lp) s nt.
+  Definition u {s} := M_mvar(sig:=sig_lp) s nu.
+  Definition v {s} := M_mvar(sig:=sig_lp) s nv.
+  Definition t' {s} := M_mvar(sig:=sig_lp) s nt'.
+  Definition u' {s} := M_mvar(sig:=sig_lp) s nu'.
+  Definition v' {s} := M_mvar(sig:=sig_lp) s nv'.
+  Definition b {s} := M_mvar(sig:=sig_lp) s nb.
+  Definition b' {s} := M_mvar(sig:=sig_lp) s nb'.
 
   Definition tRefl : rule(sig:=sig_lp) tt :=
   {|
     premises := fun (_ : unit) => [];
-    conclusion := fun _ => (t, t)
+    conclusion := fun _ => (t[], t[])
   |}.
   Definition tSym : rule(sig:=sig_lp) tt :=
   {|
     premises := fun (_ : unit) => [
       prem_ind tt (fun u => u)
         mnil
-        (t, u)
+        (t[], u[])
     ];
-    conclusion := fun _ => (u, t)
+    conclusion := fun _ => (u [], t [])
   |}.
   Definition tTrans : rule(sig:=sig_lp) tt :=
   {|
     premises := fun (_ : unit) => [
       prem_ind tt (fun u => u)
         mnil
-        (t, u) ;
+        (t[], u[]) ;
       prem_ind tt (fun u => u)
         mnil
-        (u, v)
+        (u[], v[])
     ];
-    conclusion := fun _ => (t, v)
+    conclusion := fun _ => (t [], v [])
   |}.
 
   Definition tCongrApp : rule tt :=
@@ -1211,43 +1160,44 @@ Module LPConv.
     premises := fun (_ : unit) => [
       prem_ind tt (fun u => u)
         mnil
-        (t, t') ;
+        (t[], t'[]) ;
       prem_ind tt (fun u => u)
         mnil
-        (u, u')
+        (u[], u'[])
     ];
     conclusion := fun _ =>
-      (App t u, App t' u')
+      (App (t[]) (u[]), App (t'[]) (u'[]))
   |}.
+  (* In this rule, B and B' will be instanciated to terms with one variable ; the substitution has to take this into account *)
   Definition tCongrPi : rule tt :=
   {|
     premises := fun (_ : unit) => [
       prem_ind tt (fun u => u)
         mnil
-        (A, A');
+        (A[], A'[]);
       prem_ind tt (fun u => u)
         (mcons tt mnil)
-        (B, B')
+        (B[var 0], B'[var 0])
     ];
     conclusion := fun _ =>
-      (Pi A B, Pi A' B')
+      (Pi (A[]) (B[var 0]), Pi (A'[]) (B'[var 0]))
   |}.
   Definition tCongrLam : rule tt :=
   {|
     premises := fun (_ : unit) => [
       prem_ind tt (fun u => u)
         (mcons tt mnil)
-        (b, b')
+        (b[var 0], b'[var 0])
     ];
     conclusion := fun _ =>
-      (lambda b, lambda b')
+      (lambda (b[var 0]), lambda (b'[var 0]))
   |}.
 
   Definition tBeta : rule tt :=
   {|
     premises := fun (_ : unit) => [];
     conclusion := fun _ =>
-    (App (lambda b) u, bu)
+    (App (lambda (b[var 0])) (u[]), b[u[]])
   |}.
 
   Definition typ_conv_lampi : jdg_sig := {|rules:=
@@ -1276,10 +1226,11 @@ Module LPConv.
     [] ⊢ eT n ≡ eApp (elambda (E_var 0)) (eT n).
   Proof.
     (* Apply symmetry *)
-    pose (msym := fun k =>
-      if (k.(name)=?conv_nu) then (eT n)
-      else if (k.(name)=?conv_nt) then (eApp (elambda (E_var 0)) (eT n))
-      else (default_menv k)
+    (* The instansiation msym only depends on the name of the meta-variables. This is OK because we did everything correctly when we defined our signature. *)
+    pose (msym := fun k s =>
+      if (k=?nu) then (eT n)
+      else if (k=?nt) then (eApp (elambda (E_var 0)) (eT n))
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1294,10 +1245,10 @@ Module LPConv.
     2: reflexivity.
 
     (* Apply beta *)
-    pose (mbeta := fun k =>
-      if (k.(name)=?conv_nb) then (E_var 0)
-      else if (k.(name)=?conv_nu) then (eT n)
-      else (default_menv k)
+    pose (mbeta := fun k s =>
+      if (k=?nb) then (E_var 0)
+      else if (k=?nu) then (eT n)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1323,24 +1274,13 @@ Module LambdaPi.
   Definition nt := 5.
   Definition nA' := 6.
 
-  Notation A := (scoped_mvar nA 0).
-  Notation B := (scoped_mvar nB 1).
-  Notation f := (scoped_mvar nf 0).
-  Notation u := (scoped_mvar nu 0).
-  Notation Bu := (one_subst nB u).
-  Notation b := (scoped_mvar nb 1).
-  Notation t := (scoped_mvar nt 0).
-  Notation A' := (scoped_mvar nA' 0).
-
-  Lemma B_Bu_mvar :
-    forall k k' scopes scopes' Hs Hs' s s',
-    B = @M_mvar sig_lp 1 k scopes Hs s ->
-    Bu = @M_mvar sig_lp 0 k' scopes' Hs' s' ->
-    k = k'.
-  Proof.
-    intros.
-    inversion H. inversion H0. reflexivity.
-  Qed.
+  Definition A {s} := M_mvar(sig:=sig_lp) s nA.
+  Definition B {s} := M_mvar(sig:=sig_lp) s nB.
+  Definition f {s} := M_mvar(sig:=sig_lp) s nf.
+  Definition u {s} := M_mvar(sig:=sig_lp) s nu.
+  Definition b {s} := M_mvar(sig:=sig_lp) s nb.
+  Definition t {s} := M_mvar(sig:=sig_lp) s nt.
+  Definition A' {s} := M_mvar(sig:=sig_lp) s nA'.
 
   (* Typing rules *)
   Instance LpDecl : IDecl unit := fun _ X => X.
@@ -1364,13 +1304,13 @@ Module LambdaPi.
     [
       prem_ind tt (fun A => A)
         mnil
-        (A, T n) ;
+        (A[], T n) ;
       prem_ind tt (fun A => A)
-        (mcons(n:=0) A mnil)
-        (B, T m)
+        (mcons(n:=0) (A[]) mnil)
+        (B[var 0], T m)
     ] ;
     conclusion := fun '(n, m) =>
-      (Pi A B, T (Nat.max n m))
+      (Pi (A[]) (B[var 0]), T (Nat.max n m))
   |}.
   Definition tApp : rule tt :=
   {|
@@ -1378,25 +1318,26 @@ Module LambdaPi.
     [
       prem_ind tt (fun A => A)
         mnil
-        (f, Pi A B);
+        (f[], Pi (A[]) (B[var 0]));
       prem_ind tt (fun A => A)
         mnil
-        (u, A)
+        (u[], A[])
     ];
     conclusion := fun _ =>
-      (App f u, Bu)
+      (App (f[]) (u[]), B[u[]])
   |}.
+
 
   Definition tLam : rule tt :=
   {|
     premises := fun (_ : unit) =>
     [
       prem_ind tt (fun A => A)
-        (mcons(n:=0) A mnil)
-        (b, B)
+        (mcons(n:=0) (A[]) mnil)
+        (b[var 0], B[var 0])
     ];
     conclusion := fun _ =>
-      (lambda b, Pi A B)
+      (lambda (b[var 0]), Pi (A[]) (B[var 0]))
   |}.
 
   Definition tConv : rule tt :=
@@ -1405,13 +1346,13 @@ Module LambdaPi.
     [
       prem_ind tt (fun A => A)
         (mnil)
-        (t, A);
+        (t[], A[]);
       prem_pred tt (fun Γ m =>
-        map (fun _ => tt) Γ ⊢ eval m A ≡ eval m A'
+        map (fun _ => tt) Γ ⊢ inst m (@A 0[]) ≡ inst m (@A' 0[])
       )
     ];
     conclusion := fun _ =>
-      (t, A')
+      (t[], A'[])
   |}.
 
   Definition typ_lampi : jdg_sig := {|rules:=
@@ -1462,34 +1403,35 @@ Module LambdaPi.
     - inversion H0. subst.
       (* Clean the context a bit *)
       clear H0.
-      remember (m {|name := nA ; lscope := 0|}) as tA.
-      remember (m {|name := nA' ; lscope := 0|}) as tA'.
+      remember (m nA 0) as tA.
+      remember (m nA' 0) as tA'.
       simpl.
-      rewrite subst_minus_plus_zero. rewrite 2!subst_sid.
-      rewrite subst_minus_plus_zero in H2. rewrite 2!subst_sid in H2.
+      setoid_rewrite nth_error_nil. setoid_rewrite nth_error_nil in H2.
+      rewrite subst_minus_plus_zero in *.
+      rewrite 2!subst_sid in *.
       (* Apply the theorem of preservation by substitution because the predicate is an inductive predicate that we already built *)
-      pose (preserve_subst(jsig:=typ_conv_lampi)).
-      specialize (p tt (map (fun _ => tt) Γ) (tA, tA')).
-      unfold substitute_jdg, fmap, FMapProd, fmap, FMapId in p.
-      apply p. apply H2.
+      pose (preserve_subst(jsig:=typ_conv_lampi) tt (map (fun _ => tt) Γ) (tA, tA')).
+      apply p; clear p.
+      apply H2.
       (* We still need to show that :
         [map (fun u => u) Γ ⊢s map (fun u => u) Δ]
         This is a part that is more specific to the theory we built. We even [Admitted] a part of this proof that is not comfortable in this framework, and that is not useful for the example
       *)
       apply styping_to_unit. assumption.
-    - inversion H0. rewrite subst_minus_plus_zero. subst.
-      rewrite subst_minus_plus_zero in H1. rewrite 2!subst_sid in *.
-      rewrite <- H2. assumption.
+    - inversion H0. clear H0.
+      setoid_rewrite nth_error_nil. subst. setoid_rewrite nth_error_nil in H1.
+      rewrite subst_minus_plus_zero in *.
+      rewrite !subst_sid in *. rewrite !H2 in H1. assumption.
   Qed.
 
   Lemma proof_type_id n :
     [] ⊢ (elambda (E_var 0), ePi (eT n) (eT n)).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nb) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nb) then (E_var 0)
+      else if (k=?nA) then (eT n)
+      else if (k=?nB) then (eT n)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1505,12 +1447,12 @@ Module LambdaPi.
   Lemma proof_type_id_app n :
     [eT n] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (eT n)).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nf) then (elambda (E_var 0))
-      else if (k.(name)=?nu) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nf) then (elambda (E_var 0))
+      else if (k=?nu) then (E_var 0)
+      else if (k=?nA) then (eT n)
+      else if (k=?nB) then (eT n)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1539,11 +1481,11 @@ Module LambdaPi.
     eApp (elambda (E_var 0)) (eT n)).
   Proof.
     (* Use the conversion rule *)
-    pose (m := fun k =>
-      if (k.(name)=?nt) then (eApp (elambda (E_var 0)) (E_var 0))
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nA') then (eApp (elambda (E_var 0)) (eT n))
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nt) then (eApp (elambda (E_var 0)) (E_var 0))
+      else if (k=?nA) then (eT n)
+      else if (k=?nA') then (eApp (elambda (E_var 0)) (eT n))
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1551,9 +1493,10 @@ Module LambdaPi.
     3: reflexivity.
     - (* Inductive premise *)
       intros. destruct_n H; noconf H.
-      unfold eval_jdg, eval_ctx, fmap, FMapProd, fmap, FMapId. simpl. apply proof_type_id_app.
+      unfold inst_jdg, inst_ctx, fmap, FMapProd, fmap, FMapId. simpl. apply proof_type_id_app.
     - (* Predicate premise *)
       intros. destruct_n H; noconf H.
+      setoid_rewrite nth_error_nil.
       rewrite subst_minus_plus_zero. rewrite 2! subst_sid.
       simpl. unfold m. simpl.
       (* Need to weaken the context *)
@@ -1622,9 +1565,9 @@ Module SimplLambda.
   Definition nu := 1.
   Definition nb := 2.
 
-  Notation f := (scoped_mvar nf 0).
-  Notation u := (scoped_mvar nu 0).
-  Notation b := (scoped_mvar nb 1).
+  Definition f {s} := M_mvar(sig:=sig_lam) s nf.
+  Definition u {s} := M_mvar(sig:=sig_lam) s nu.
+  Definition b {s} := M_mvar(sig:=sig_lam) s nb.
 
   Definition tApp : rule tt :=
   {|
@@ -1632,13 +1575,13 @@ Module SimplLambda.
     [
       prem_ind tt (fun A => A)
         mnil
-        (f, sArrow A B);
+        (f[], sArrow A B);
       prem_ind tt (fun A => A)
         mnil
-        (u, A)
+        (u[], A)
     ];
     conclusion := fun '(_, B) =>
-      (App f u, B)
+      (App (f[]) (u[]), B)
   |}.
 
   Definition tLam : rule tt :=
@@ -1647,10 +1590,10 @@ Module SimplLambda.
     [
       prem_ind tt (fun A => A)
         (mcons(n:=0) A mnil)
-        (b, B)
+        (b[var 0], B)
     ];
     conclusion := fun '(A, B) =>
-      (lambda b, sArrow A B)
+      (lambda (b[var 0]), sArrow A B)
   |}.
 
   Definition typ_lam : jdg_sig := {|rules:=
@@ -1682,16 +1625,16 @@ Module SimplLambda.
   Lemma proof_type_id :
     [] ⊢ ((elambda (E_var 0), sArrow sIota sIota)).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nb) then (E_var(sig:=sig_lam) 0)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nb) then (E_var(sig:=sig_lam) 0)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
     exact m. exact tLam. exact (sIota, sIota). repeat (try (left; reflexivity); right).
     3: reflexivity.
     all: intros; destruct_n H; noconf H.
-    simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
+    simpl. unfold inst_jdg, fmap, FMapProd, fmap, FMapId.
     eapply conv_proof_j. apply tvar. constructor.
     reflexivity.
   Qed.
@@ -1703,10 +1646,10 @@ Module SimplLambda.
   Lemma proof_type_id_app :
     [sIota] ⊢ (eApp (elambda (E_var 0)) (E_var 0), (sIota)).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nf) then (elambda (E_var 0))
-      else if (k.(name)=?nu) then (E_var 0)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nf) then (elambda (E_var 0))
+      else if (k=?nu) then (E_var 0)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -1832,22 +1775,19 @@ Module LPEta.
   Definition nb' := 11.
   Definition nf := 12.
 
-  Notation A := (scoped_mvar nA 0).
-  Notation B := (scoped_mvar nB 1).
-  Notation A' := (scoped_mvar nA' 0).
-  Notation B' := (scoped_mvar nB' 1).
-  Notation t := (scoped_mvar nt 0).
-  Notation u := (scoped_mvar nu 0).
-  Notation v := (scoped_mvar nv 0).
-  Notation t' := (scoped_mvar nt' 0).
-  Notation u' := (scoped_mvar nu' 0).
-  Notation v' := (scoped_mvar nv' 0).
-  Notation b := (scoped_mvar nb 1).
-  Notation b' := (scoped_mvar nb' 1).
-  Notation bu := (one_subst nb u).
-  Notation f := (scoped_mvar nf 0).
-  Notation f' := (scoped_mvar nf 1).
-  Notation Bu := (one_subst nB u).
+  Definition A {s} := M_mvar(sig:=sig_lp) s nA.
+  Definition B {s} := M_mvar(sig:=sig_lp) s nB.
+  Definition A' {s} := M_mvar(sig:=sig_lp) s nA'.
+  Definition B' {s} := M_mvar(sig:=sig_lp) s nB'.
+  Definition t {s} := M_mvar(sig:=sig_lp) s nt.
+  Definition u {s} := M_mvar(sig:=sig_lp) s nu.
+  Definition v {s} := M_mvar(sig:=sig_lp) s nv.
+  Definition t' {s} := M_mvar(sig:=sig_lp) s nt'.
+  Definition u' {s} := M_mvar(sig:=sig_lp) s nu'.
+  Definition v' {s} := M_mvar(sig:=sig_lp) s nv'.
+  Definition b {s} := M_mvar(sig:=sig_lp) s nb.
+  Definition b' {s} := M_mvar(sig:=sig_lp) s nb'.
+  Definition f {s} := M_mvar(sig:=sig_lp) s nf.
 
   (* Conversion rules *)
   #[refine] Definition tRefl : rule(sig:=sig_lp) Conversion :=
@@ -1855,12 +1795,12 @@ Module LPEta.
     premises := fun (_ : unit) => [
       prem_ind Typing _
         mnil
-        (t, A)
+        (t[], A[])
     ];
-    conclusion := (* (fun _ => (t, t, A)) *) _
+    conclusion := _
   |}.
   exact (fun u => u).
-  exact (fun _ => (t, t, A)).
+  exact (fun _ => (t[], t[], A[])).
   Defined.
 
   Definition tSym : rule(sig:=sig_lp) Conversion :=
@@ -1868,21 +1808,21 @@ Module LPEta.
     premises := fun (_ : unit) => [
       prem_ind Conversion (fun u => u)
         mnil
-        (t, u, A)
+        (t[], u[], A[])
     ];
-    conclusion := fun _ => (u, t, A)
+    conclusion := fun _ => (u[], t[], A[])
   |}.
   Definition tTrans : rule(sig:=sig_lp) Conversion :=
   {|
     premises := fun (_ : unit) => [
       prem_ind Conversion (fun u => u)
         mnil
-        (t, u, A) ;
+        (t[], u[], A[]) ;
       prem_ind Conversion (fun u => u)
         mnil
-        (u, v, A)
+        (u[], v[], A[])
     ];
-    conclusion := fun _ => (t, v, A)
+    conclusion := fun _ => (t[], v[], A[])
   |}.
 
   Definition tCongrApp : rule Conversion :=
@@ -1890,78 +1830,74 @@ Module LPEta.
     premises := fun (_ : unit) => [
       prem_ind Conversion (fun u => u)
         mnil
-        (t, t', Pi A B) ;
+        (t[], t'[], Pi (A[]) (B[var 0])) ;
       prem_ind Conversion (fun u => u)
         mnil
-        (u, u', A)
+        (u[], u'[], A[])
     ];
     conclusion := fun _ =>
-    (* I'm not sure if the rule is the right one, because I chose the type to be B[u] instead of B[u']. They should be the same, but I don't know if this is the usual rule *)
-      (App t u, App t' u', Bu)
+      (App (t[]) (u[]), App (t'[]) (u'[]), B[u[]])
   |}.
   Definition tCongrPi : rule Conversion :=
   {|
     premises := fun '(n, m) => [
       prem_ind Conversion (fun u => u)
         mnil
-        (A, A', T n) ;
+        (A[], A'[], T n) ;
       prem_ind Conversion (fun u => u)
         (mcons (T n) mnil)
-        (B, B', T m)
+        (B[var 0], B'[var 0], T m)
     ];
     conclusion := fun '(n, m) =>
-      (Pi A B, Pi A' B', T (Nat.max n m))
+      (Pi (A[]) (B[var 0]), Pi (A'[]) (B'[var 0]), T (Nat.max n m))
   |}.
 
   Definition tCongrLam : rule Conversion :=
   {|
     premises := fun (_ : unit) => [
       prem_ind Conversion (fun u => u)
-        (mcons A mnil)
-        (b, b', B)
+        (mcons (A[]) mnil)
+        (b[var 0], b'[var 0], B[var 0])
     ];
     conclusion := fun _ =>
-      (lambda b, lambda b', Pi A B)
+      (lambda (b[var 0]), lambda (b'[var 0]), Pi (A[]) (B[var 0]))
   |}.
 
   #[refine] Definition tBeta : rule(sig:=sig_lp) Conversion :=
   {|
     premises := fun (_ : unit) => [
       prem_ind Typing _
-        (mcons A mnil)
-        (b, B) ;
+        (mcons (A[]) mnil)
+        (b[var 0], B[var 0]) ;
       prem_ind Typing _
         mnil
-        (u, A)
+        (u[], A[])
     ];
-    conclusion := fun (t : unit) =>
-    (* (App (lambda b) u, bu, Bu) *) _
+    conclusion := fun (t : unit) => _
   |}.
   - exact (fun u => u).
   - exact (fun u => u).
-  - exact (App (lambda b) u, bu, Bu).
+  - exact (App (lambda (b[var 0])) (u[]), b[u[]], B[u[]]).
   Defined.
 
   #[refine] Definition tEta : rule Conversion :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind Typing
-        _
+      prem_ind Typing _
         mnil
-        (f, Pi A B)
+        (f[], Pi (A[]) (B[var 0]))
     ];
-    conclusion := fun _ =>
-      (* (f, lambda (App f' (Var 0 _)), Pi A B) *) _
+    conclusion := fun _ => _
   |}.
   - exact (fun u => u).
-  - simpl. refine (f, lambda (App f' (Var 0 _)), Pi A B). lia.
+  - exact (f[], lambda (App (f[]) (var 0)), Pi (A[]) (B[var 0])).
   Defined.
 
   (* Typing rules *)
   #[refine] Definition tType : rule(sig:=sig_lp) Typing :=
   {|
     premises := fun _ => [];
-    conclusion := fun n : nat => (* (T(s:=0) n, T (S n)) *) _
+    conclusion := fun n : nat => _
   |}.
   exact (T n, T (S n)).
   Defined.
@@ -1972,13 +1908,13 @@ Module LPEta.
     [
       prem_ind Typing (fun A => A)
         mnil
-        (A, T n) ;
+        (A[], T n) ;
       prem_ind Typing (fun A => A)
-        (mcons(n:=0) A mnil)
-        (B, T m)
+        (mcons(n:=0) (A[]) mnil)
+        (B[var 0], T m)
     ] ;
     conclusion := fun '(n, m) =>
-      (Pi A B, T (Nat.max n m))
+      (Pi (A[]) (B[var 0]), T (Nat.max n m))
   |}.
   Definition tApp : rule Typing :=
   {|
@@ -1986,13 +1922,13 @@ Module LPEta.
     [
       prem_ind Typing (fun A => A)
         mnil
-        (f, Pi A B);
+        (f[], Pi (A[]) (B[var 0]));
       prem_ind Typing (fun A => A)
         mnil
-        (u, A)
+        (u[], A[])
     ];
     conclusion := fun _ =>
-      (App f u, Bu)
+      (App (f[]) (u[]), B[u[]])
   |}.
 
   Definition tLam : rule Typing :=
@@ -2000,11 +1936,11 @@ Module LPEta.
     premises := fun (_ : unit) =>
     [
       prem_ind Typing (fun A => A)
-        (mcons(n:=0) A mnil)
-        (b, B)
+        (mcons(n:=0) (A[]) mnil)
+        (b[var 0], B[var 0])
     ];
     conclusion := fun _ =>
-      (lambda b, Pi A B)
+      (lambda (b[var 0]), Pi (A[]) (B[var 0]))
   |}.
 
   #[refine] Definition tConv : rule(sig:=sig_lp) Typing :=
@@ -2013,14 +1949,13 @@ Module LPEta.
     [
       prem_ind Typing (fun A => A)
         (mnil)
-        (t, A);
-      prem_ind Conversion
-        _
+        (t[], A[]);
+      prem_ind Conversion _
         mnil
-        (A, A', T n)
+        (A[], A'[], T n)
     ];
     conclusion := fun _ =>
-      (t, A')
+      (t[], A'[])
   |}.
   exact (fun u => u).
   Defined.
@@ -2062,11 +1997,11 @@ Module LPEta.
     [] ⊢ eT n ≡ eApp (elambda (E_var 0)) (eT n) : eT (S n).
   Proof.
     (* Apply symmetry *)
-    pose (msym := fun k =>
-      if (k.(name)=?nu) then (eT n)
-      else if (k.(name)=?nt) then (eApp (elambda (E_var 0)) (eT n))
-      else if (k.(name)=?nA) then (eT (S n))
-      else (default_menv k)
+    pose (msym := fun k s =>
+      if (k=?nu) then (eT n)
+      else if (k=?nt) then (eApp (elambda (E_var 0)) (eT n))
+      else if (k=?nA) then (eT (S n))
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -2081,23 +2016,23 @@ Module LPEta.
     2: reflexivity.
 
     (* Apply beta *)
-    pose (mbeta := fun k =>
-      if (k.(name)=?nb) then (E_var 0)
-      else if (k.(name)=?nu) then (eT n)
-      else if (k.(name)=?nA) then (eT (S n))
-      else if (k.(name)=?nB) then (eT (S n))
-      else (default_menv k)
+    pose (mbeta := fun k s =>
+      if (k=?nb) then (E_var 0)
+      else if (k=?nu) then (eT n)
+      else if (k=?nA) then (eT (S n))
+      else if (k=?nB) then (eT (S n))
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
     exact mbeta. exact tBeta. exact tt. repeat (try (left; reflexivity); right).
     3: reflexivity.
     all: intros; destruct_n H; noconf H.
-    - simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
+    - simpl. unfold inst_jdg, fmap, FMapProd, fmap, FMapId.
       unshelve eapply conv_proof_j. exact (make_jdg Typing _ (eT (S n)) (E_var 0)).
       2: reflexivity.
       apply tvar. constructor.
-    - simpl. unfold eval_jdg, fmap, FMapProd, fmap, FMapId.
+    - simpl. unfold inst_jdg, fmap, FMapProd, fmap, FMapId.
       unshelve eapply (conv_proof_j). exact (eT n, eT (S n)).
       2: reflexivity.
       eapply conv_proof_j.
@@ -2111,11 +2046,11 @@ Module LPEta.
   Lemma proof_type_id n :
     [] ⊢ elambda (E_var 0) : ePi (eT n) (eT n).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nb) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nb) then (E_var 0)
+      else if (k=?nA) then (eT n)
+      else if (k=?nB) then (eT n)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -2131,12 +2066,12 @@ Module LPEta.
   Lemma proof_type_id_app n :
     [eT n] ⊢ eApp (elambda (E_var 0)) (E_var 0) : (eT n).
   Proof.
-    pose (m := fun k =>
-      if (k.(name)=?nf) then (elambda (E_var 0))
-      else if (k.(name)=?nu) then (E_var 0)
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nB) then (eT n)
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nf) then (elambda (E_var 0))
+      else if (k=?nu) then (E_var 0)
+      else if (k=?nA) then (eT n)
+      else if (k=?nB) then (eT n)
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -2162,11 +2097,11 @@ Module LPEta.
     eApp (elambda (E_var 0)) (eT n).
   Proof.
     (* Use the conversion rule *)
-    pose (m := fun k =>
-      if (k.(name)=?nt) then (eApp (elambda (E_var 0)) (E_var 0))
-      else if (k.(name)=?nA) then (eT n)
-      else if (k.(name)=?nA') then (eApp (elambda (E_var 0)) (eT n))
-      else (default_menv k)
+    pose (m := fun k s =>
+      if (k=?nt) then (eApp (elambda (E_var 0)) (E_var 0))
+      else if (k=?nA) then (eT n)
+      else if (k=?nA') then (eApp (elambda (E_var 0)) (eT n))
+      else (default_menv k s)
     ).
     eapply conv_proof_j.
     unshelve econstructor.
@@ -2174,7 +2109,7 @@ Module LPEta.
     3: reflexivity.
     - (* Inductive premise *)
       intros. destruct_n H; noconf H.
-      + unfold eval_jdg, eval_ctx, fmap, FMapProd, fmap, FMapId.
+      + unfold inst_jdg, inst_ctx, fmap, FMapProd, fmap, FMapId.
         simpl. unfold fmap, FMapId.
         unshelve eapply conv_proof_j. exact (eApp (elambda (E_var 0)) (E_var 0), eT n). 2: reflexivity.
         apply proof_type_id_app.
