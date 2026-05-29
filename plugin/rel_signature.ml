@@ -3,12 +3,12 @@ open Prelude
 (* Errors *)
 exception Rel_gen_bug of string
 
-
 (* Pre-checking structures *)
 type pprem_r =
   | PPremInd of {
     pind : Names.lident;
-    pargs : Constrexpr.constr_expr list
+    pargs : Constrexpr.constr_expr list ;
+    pextension : Constrexpr.constr_expr option ;
   }
   | PPremPred of {
     ppred : Constrexpr.constr_expr
@@ -16,7 +16,10 @@ type pprem_r =
 and pprem = pprem_r CAst.t
 
 type parity_decl_r = {
-  prel_name : Names.lident ; parity : Constrexpr.constr_expr list
+  prel_name : Names.lident ;
+  pdecl : Constrexpr.constr_expr ;
+  parity : Constrexpr.constr_expr list ;
+  pctx_name : Names.lident ;
 }
 and parity_decl = parity_decl_r CAst.t
 
@@ -36,21 +39,27 @@ and rel_psignature = rel_psignature_r CAst.t
 type prem =
   | PremInd of {
     ind : Names.variable;
-    args : Evd.econstr list
+    args : Evd.econstr list;
+    extension : Evd.econstr option ;
   }
   | PremPred of {
     pred : Evd.econstr
   }
 
 type arity_decl = {
-  rel_name : Names.variable ; arity : Evd.econstr list
+  rel_name : Names.variable ;
+  decl : Evd.econstr ;
+  arity : Evd.econstr list ;
+  ctx_name : Names.variable ;
 }
 
 type rule_decl = {
   rule_name : Names.variable ;
+  decl : Evd.econstr ;
   vars : (Names.lident * Evd.econstr) list ;
   conclusion : Names.variable * Evd.econstr list ;
-  premises : prem list
+  premises : prem list ;
+  ctx_name : Names.variable ;
 }
 
 type rel_signature = { arity_decls : arity_decl list ; rule_decls : rule_decl list }
@@ -76,11 +85,15 @@ let check_fresh (st : state) (name : Names.lident) : unit =
 let check_arity_decl (st : state) (d : parity_decl) : state =
   (* Check that the name is fresh *)
   check_fresh st d.v.prel_name;
+  (* Typecheck the type of declarations *)
+  let sigma, tdecl = Constrintern.interp_constr_evars st.env st.sigma  d.v.pdecl in
   (* Typecheck all arities *)
-  let sigma, arity = List.monad_map (fun t env sigma -> Constrintern.interp_constr_evars env sigma t) d.v.parity st.env st.sigma in
+  let sigma, arity = List.monad_map (fun t env sigma -> Constrintern.interp_constr_evars env sigma t) d.v.parity st.env sigma in
   let ad : arity_decl = {
     rel_name = d.v.prel_name.v ;
-    arity = arity
+    decl = tdecl ;
+    arity = arity ;
+    ctx_name = d.v.pctx_name.v
   } in
   {
     env = st.env ;
@@ -120,7 +133,11 @@ let check_app (ind : Names.lident) (args : Constrexpr.constr_expr list) (st : st
   let sigma, args = List.monad_map (fun t env sigma -> Constrintern.interp_constr_evars env sigma t) args st.env st.sigma in
   (* Check that the arguments are indeed the right ones *)
   let arg_types = List.map (Retyping.get_type_of st.env sigma) args in
+  (* Add the list type *)
+  (* let gr_list = Rocqlib.lib_ref "core.list.type" in *)
+  (* let sigma, c_list = Evd.fresh_global st.env sigma gr_list in *)
   (if arg_types <> ad.arity then Log.error ?loc:ind.loc "Bad arguments" ());
+  (* (if arg_types <> ((EConstr.mkApp (c_list, [|ad.decl|]))::ad.arity) then Log.error ?loc:ind.loc "Bad arguments" ()); *)
   ind.v, args, {
     env = st.env ;
     sigma = sigma ;
@@ -130,9 +147,16 @@ let check_app (ind : Names.lident) (args : Constrexpr.constr_expr list) (st : st
 let check_rule_decls (st : state) (d : prule_decl) : state =
   (* Check that the name is fresh *)
   check_fresh st d.v.prule_name;
+  (* Get the type of the declaration for the rule *)
+  let ad = List.find_opt (fun (ad : arity_decl) -> ad.rel_name = (fst d.v.pconclusion).v) st.signature.arity_decls in
+  match ad with
+  | None -> Log.error ?loc:(fst (d.v.pconclusion)).loc "%s is not a declared relation." (Names.Id.to_string (fst d.v.pconclusion).v)
+  | Some _ -> ();
+  let ad = Option.get ad in
+  let tdecl = ad.decl in
+
   (* Check the variables and get the new environment *)
   let names = List.map fst d.v.pvars in
-  (* let pvars = List.rev (d.v.pvars) in *)
   let vars, st' = mk_var_decls d.v.pvars st in
   (* Check the conclusion *)
   let ccl, args_ccl, st' = check_app (fst d.v.pconclusion) (snd d.v.pconclusion) st' in
@@ -145,23 +169,43 @@ let check_rule_decls (st : state) (d : prule_decl) : state =
     let t', st' = state_monad_map f t st' in
     (h'::t'), st'
   in
+
   let premises, st' = state_monad_map (fun (p : pprem) st -> match p.v with
     | PPremPred p ->
-      let sigma, p = Constrintern.interp_constr_evars st.env st.sigma p.ppred in
+      (* We need to interpret [p] in an environment where the context is abstracted *)
+      let gr_list = Rocqlib.lib_ref "core.list.type" in
+      let sigma, c_list = Evd.fresh_global st'.env st'.sigma gr_list in
+      let annot = Context.make_annot ad.ctx_name Sorts.Relevant in
+      let decl = Context.Named.Declaration.LocalAssum (annot, EConstr.to_constr st'.sigma (EConstr.mkApp (c_list, [|ad.decl|]))) in
+      let env' = Environ.push_named decl st.env in
+      let sigma, p = Constrintern.interp_constr_evars env' st.sigma p.ppred in
       PremPred {pred = p}, {
         env = st.env ;
         sigma = sigma ;
         signature = st.signature
       }
-    | PPremInd p ->
-      let ind, args, st = check_app p.pind p.pargs st in
-      PremInd {ind = ind ; args = args}, st
+    | PPremInd p_ind ->
+      (* Check that the arguments are the right one *)
+      let ind, args, st = check_app p_ind.pind p_ind.pargs st in
+      (* Check that the extension is the right one *)
+      let ext = match p_ind.pextension with
+      | None -> None
+      | Some e ->
+        let sigma, e = Constrintern.interp_constr_evars st.env st.sigma e in
+        let gr_list = Rocqlib.lib_ref "core.list.type" in
+        let sigma, c_list = Evd.fresh_global st.env sigma gr_list in
+        (if (Retyping.get_type_of st.env sigma e) <> EConstr.mkApp (c_list, [|tdecl|]) then Log.error ?loc:p.loc "Wrong extension type" ());
+        Some e
+      in
+      PremInd {ind = ind ; args = args ; extension = ext}, st
   ) (d.v.ppremises) st' in
   let r : rule_decl = {
     rule_name = d.v.prule_name.v ;
+    decl = tdecl ;
     vars = List.combine names vars ;
     conclusion = (ccl, args_ccl) ;
-    premises = premises
+    premises = premises ;
+    ctx_name = ad.ctx_name ;
   } in
   {
     env = st.env ; (* We do NOT change the global environment! *)
@@ -202,18 +246,27 @@ let rec make_arity (l : Evd.econstr list) = match l with
 | [] -> EConstr.mkProp
 | h::t -> EConstr.mkArrowR h (make_arity t)
 
-let make_rule_type (name_assoc : (Names.variable * int) list) (d : rule_decl) : Names.variable list -> Evd.econstr m = fun inds ->
+let make_rule_type (name_assoc : (Names.variable * int) list) (ctx_type : Evd.econstr) (app_type : Evd.econstr) (d : rule_decl) : Names.variable list -> Evd.econstr m = fun inds ->
   (* Auxiliary function that builds the arrow type *)
   let rec mk_arrow (l : prem list) : Evd.econstr = match l with
   | [] -> (* Build the conclusion *)
       let concl = List.nth inds (List.assoc (fst d.conclusion) name_assoc) in
-      let args = Array.of_list (snd d.conclusion) in
+      (* Add the context to the begining of the conclusion *)
+      let args = Array.of_list (
+        (EConstr.mkVar d.ctx_name):: (snd d.conclusion)
+      ) in
       EConstr.mkApp (EConstr.mkVar concl, args)
   | PremPred p :: t ->
     EConstr.mkArrowR p.pred (mk_arrow t)
   | PremInd p :: t ->
     let ind = List.nth inds (List.assoc p.ind name_assoc) in
-    let args = Array.of_list p.args in
+    (* Create the context *)
+    let new_ctx = match p.extension with
+    | None -> EConstr.mkVar d.ctx_name
+    | Some e ->
+      EConstr.mkApp (app_type, [|d.decl ; e ; EConstr.mkVar d.ctx_name|])
+    in
+    let args = Array.of_list (new_ctx :: p.args) in
     EConstr.mkArrowR (EConstr.mkApp (EConstr.mkVar ind, args)) (mk_arrow t)
   in
   let rec mk_prod (l : (Names.lident * Evd.econstr) list) = match l with
@@ -221,7 +274,9 @@ let make_rule_type (name_assoc : (Names.variable * int) list) (d : rule_decl) : 
   | (x, t)::l ->
     let x_annot = Context.make_annot x.v EConstr.ERelevance.relevant in
     EConstr.mkNamedProd (Evd.from_env (Global.env ())) x_annot t (mk_prod l)
-  in ret (mk_prod d.vars)
+  in ret (mk_prod (
+    (CAst.make d.ctx_name, ctx_type)::(d.vars)
+  ))
 
 let rec sort_by_rel (assoc : (Names.variable * int) list) (a : 'a list array) (f : rule_decl -> 'a) (l : rule_decl list) : unit = match l with
 | [] -> ()
@@ -232,17 +287,30 @@ let rec sort_by_rel (assoc : (Names.variable * int) list) (a : 'a list array) (f
 
 let build_inductive (st : state) : Names.MutInd.t =
   let signature = st.signature in
+  let sigma = st.sigma in let env = st.env in
   (* Build all relation names *)
   let rel_names = List.map (fun d -> d.rel_name) signature.arity_decls in
   (* Build all relation arities *)
-  let rel_arities = List.map (fun d -> make_arity d.arity) signature.arity_decls in
+  let gr_list = Rocqlib.lib_ref "core.list.type" in
+  let sigma, c_list = Evd.fresh_global env sigma gr_list in
+  let rel_arities = List.map (fun (d : arity_decl) ->
+    let ctx_type = EConstr.mkApp (c_list, [|d.decl|]) in
+    EConstr.mkArrowR ctx_type (make_arity d.arity)
+  ) signature.arity_decls in
 
   (* Rules *)
   let rel_names_assoc = List.mapi (fun i n -> n, i) rel_names in
   let rule_names_arr : Names.variable list array = Array.make (List.length rel_names) [] in
   let rule_types_arr : (Names.variable list -> Evd.econstr m) list array = Array.make (List.length rel_names) [] in
 
-  sort_by_rel rel_names_assoc rule_types_arr (make_rule_type rel_names_assoc) (signature.rule_decls);
+  sort_by_rel rel_names_assoc rule_types_arr (fun (r : rule_decl) ->
+    (* Type of lists *)
+    let gr_list = Rocqlib.lib_ref "core.list.type" in
+    let sigma, c_list = Evd.fresh_global st.env sigma gr_list in
+    let gr_app = Rocqlib.lib_ref "sulfur.list.app" in
+    let sigma, c_app = Evd.fresh_global st.env sigma gr_app in
+    make_rule_type rel_names_assoc (EConstr.mkApp (c_list, [|r.decl|])) c_app r
+  ) (signature.rule_decls);
   sort_by_rel rel_names_assoc rule_names_arr (fun (d : rule_decl) -> d.rule_name) (signature.rule_decls);
 
   let rule_names = Array.to_list rule_names_arr in
@@ -255,6 +323,7 @@ let build_inductive (st : state) : Names.MutInd.t =
 let main (s : rel_psignature) : unit =
   (* Check the signature *)
   let st = monad_run @@ check_psig s in
+  Feedback.msg_info (Pp.str "Checking OK");
   (* Build the inductive *)
   let _ = build_inductive st in
   ()

@@ -11,7 +11,7 @@ Sulfur Generate
 }}.
 
 Ren Generate [[
-  Relation uconv : term -> term -> Prop;
+  Relation uconv : term -> term -> Prop Declaring unit in Γ;
 
   Rule my_urefl :
     Variables : (t : term)
@@ -21,7 +21,7 @@ Ren Generate [[
   Rule my_usym :
     Variables : (s t : term)
     Premises :
-      Ind( uconv s t )
+      Ind(uconv s t)
     Conclusion : uconv s t
   ;
   Rule my_utrans :
@@ -64,149 +64,150 @@ Ren Generate [[
   ;
 ]].
 
+Print uconv.
+
 Ren Generate [[
-  Relation type : (list term) -> term -> term -> Prop;
+  Relation type : term -> term -> Prop Declaring term in Γ;
 
   Rule my_type_Ty :
-    Variables : (Γ : (list term)) (n : nat)
+    Variables : (n : nat)
     Premises :
     Conclusion :
-      type Γ (Ty n) (Ty (S n))
+      type (Ty n) (Ty (S n))
   ;
   Rule my_type_Pi :
-    Variables : (Γ : (list term)) (n m : nat) (A B : term)
+    Variables :(n m : nat) (A B : term)
     Premises :
-      Ind (type Γ A (Ty n))
-      Ind (type Γ B (Ty m))
+      Ind (type A (Ty n))
+      Ind (type B (Ty m))
     Conclusion :
-      type Γ (Pi A B) (Ty (Nat.max n m))
+      type (Pi A B) (Ty (Nat.max n m))
   ;
 
   Rule my_type_app :
-    Variables : (Γ : (list term)) (A B t u : term)
+    Variables : (A B t u : term)
     Premises :
-      Ind (type Γ t (Pi A B))
-      Ind (type Γ u A)
+      Ind (type t (Pi A B))
+      Ind (type u A)
     Conclusion :
-      type Γ (app t u) (substitute (scons u sid) B)
+      type (app t u) (substitute (scons u sid) B)
+  ;
+  Rule my_type_conv :
+    Variables : (A A' t : term)
+    Premises :
+      Ind (type t A)
+      Pred (uconv (List.map (fun _ => tt) Γ) A A')
+    Conclusion :
+      type t A'
   ;
   Rule my_type_lam :
-    Variables : (Γ : (list term)) (A B b : term)
+    Variables : (A B b : term)
     Premises :
-      Ind (type (cons A Γ) b B)
+      Ind (extend (cons A nil) in type b B)
     Conclusion :
-      type Γ (lam b) (Pi A B)
-  ;
-
-  Rule my_type_conv :
-    Variables : (Γ : (list term)) (A A' t : term)
-    Premises :
-      Ind (type Γ t A)
-      Pred (uconv A A')
-    Conclusion :
-      type Γ t A'
+      type (lam b) (Pi A B)
   ;
 ]].
 
 Print type.
 
 Ren Generate [[
-  Relation conv : (list term) -> term -> term -> term -> Prop;
-  Relation typ : (list term) -> term -> term -> Prop;
+  Relation conv : term -> term -> term -> Prop Declaring term in Γ;
+  Relation typ : term -> term -> Prop Declaring term in Γ;
 
   (* Conversion rules *)
   Rule my_refl :
-    Variables : (Γ : (list term)) (t A : term)
+    Variables : (t A : term)
     Premises :
-      Ind (typ Γ t A)
-    Conclusion : conv Γ t t A
+      Ind (typ t A)
+    Conclusion : conv t t A
   ;
   Rule my_sym :
-    Variables : (Γ : (list term)) (s t A : term)
+    Variables : (s t A : term)
     Premises :
-      Ind(conv Γ s t A)
-    Conclusion : conv Γ s t A
+      Ind(conv s t A)
+    Conclusion : conv s t A
   ;
   Rule my_trans :
-    Variables : (Γ : (list term)) (s t u A : term)
+    Variables : (s t u A : term)
     Premises :
-      Ind (conv Γ s t A)
-      Ind (conv Γ t u A)
-    Conclusion : conv Γ s u A
+      Ind (conv s t A)
+      Ind (conv t u A)
+    Conclusion : conv s u A
   ;
 
   Rule my_congr_app :
-    Variables : (Γ : (list term)) (t u t' u' A B : term)
+    Variables : (t u t' u' A B : term)
     Premises :
-      Ind (conv Γ t t' (Pi A B))
-      Ind (conv Γ u u' A)
+      Ind (conv t t' (Pi A B))
+      Ind (conv u u' A)
     Conclusion :
-      conv Γ (app t u) (app t' u') (substitute (scons u sid) B)
+      conv (app t u) (app t' u') (substitute (scons u sid) B)
   ;
   Rule my_congr_Pi :
-    Variables : (Γ : (list term)) (A B A' B' : term) (n m : nat)
+    Variables : (A B A' B' : term) (n m : nat)
     Premises :
-      Ind (conv Γ A A' (Ty n))
-      Ind (conv Γ B B' (Ty m))
+      Ind (conv A A' (Ty n))
+      Ind (conv B B' (Ty m))
     Conclusion :
-      conv Γ (Pi A B) (Pi A' B') (Ty (Nat.max n m))
+      conv (Pi A B) (Pi A' B') (Ty (Nat.max n m))
   ;
   Rule my_congr_lam :
-    Variables : (Γ : (list term)) (b b' A B : term)
+    Variables : (b b' A B : term)
     Premises :
-      Ind (conv (cons A Γ) b b' B)
+      Ind (extend (cons A nil) in conv b b' B)
     Conclusion :
-      conv Γ (lam b) (lam b') (Pi A B)
+      conv (lam b) (lam b') (Pi A B)
   ;
 
   Rule my_beta :
-    Variables : (Γ : (list term)) (b u A B : term)
+    Variables : (b u A B : term)
     Premises :
-      Ind (typ (cons A Γ) b B)
-      Ind (typ Γ u A)
+      Ind (extend (cons A nil) in typ b B)
+      Ind (typ u A)
     Conclusion :
-      conv Γ (app (lam b) u) (substitute (scons u sid) b) (substitute (scons u sid) B)
+      conv (app (lam b) u) (substitute (scons u sid) b) (substitute (scons u sid) B)
   ;
 
   (* Typing rules *)
   Rule my_typ_Ty :
-    Variables : (Γ : (list term)) (Γ : (list term)) (n : nat)
+    Variables : (n : nat)
     Premises :
     Conclusion :
-      typ Γ (Ty n) (Ty (S n))
+      typ (Ty n) (Ty (S n))
   ;
   Rule my_typ_Pi :
-    Variables : (Γ : (list term)) (n m : nat) (A B : term)
+    Variables : (n m : nat) (A B : term)
     Premises :
-      Ind (typ Γ A (Ty n))
-      Ind (typ Γ B (Ty m))
+      Ind (typ A (Ty n))
+      Ind (typ B (Ty m))
     Conclusion :
-      typ Γ (Pi A B) (Ty (Nat.max n m))
+      typ (Pi A B) (Ty (Nat.max n m))
   ;
 
   Rule my_typ_app :
-    Variables : (Γ : (list term)) (A B t u : term)
+    Variables : (A B t u : term)
     Premises :
-      Ind (typ Γ t (Pi A B))
-      Ind (typ Γ u A)
+      Ind (typ t (Pi A B))
+      Ind (typ u A)
     Conclusion :
-      typ Γ (app t u) (substitute (scons u sid) B)
+      typ (app t u) (substitute (scons u sid) B)
   ;
   Rule my_typ_lam :
-    Variables : (Γ : (list term)) (A B b : term)
+    Variables : (A B b : term)
     Premises :
-      Ind (typ (cons A Γ) b B)
+      Ind (extend (cons A nil) in typ b B)
     Conclusion :
-      typ Γ (lam b) (Pi A B)
+      typ (lam b) (Pi A B)
   ;
 
   Rule my_typ_conv :
-    Variables : (Γ : (list term)) (A A' t : term) (n : nat)
+    Variables : (A A' t : term) (n : nat)
     Premises :
-      Ind (typ Γ t A)
-      Ind (conv Γ A A' (Ty n))
+      Ind (typ t A)
+      Ind (conv A A' (Ty n))
     Conclusion :
-      typ Γ t A'
+      typ t A'
   ;
 ]].
 

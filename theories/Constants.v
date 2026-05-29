@@ -21,6 +21,7 @@ Register S as sulfur.nat.succ.
 Register list as sulfur.list.type.
 Register nil as sulfur.list.nil.
 Register cons as sulfur.list.cons.
+Register Datatypes.app as sulfur.list.app.
 
 Register string as sulfur.string.type.
 
