@@ -71,7 +71,7 @@ VERNAC ARGUMENT EXTEND prem
   { CAst.make ~loc (PPremPred {ppred = e}) }
 | [ "Ind" "(" identref(ind) constr_list(args) ")" ] ->
   { CAst.make ~loc (PPremInd { pind = ind ; pargs = args ; pextension = None }) }
-| [ "Ind" "(" "extend" constr(e) "in" identref(ind) constr_list(args) ")" ] ->
+| [ "Ind" "(" "extend" ne_constr_list(e) "in" identref(ind) constr_list(args) ")" ] ->
   { CAst.make ~loc (PPremInd { pind = ind ; pargs = args ; pextension = Some e }) }
 END
 
@@ -98,7 +98,7 @@ VERNAC ARGUMENT EXTEND jdecl
 END
 
 VERNAC ARGUMENT EXTEND arity_decl
-| [ "Relation" identref(name) ":" jdecl(args) "Declaring" constr(d) "in" identref(gamma) ";" ] ->
+| [ "Relation" identref(name) ":" jdecl(args) "," "Declaring" constr(d) "in" identref(gamma) ";" ] ->
   {
     CAst.make ~loc ({ prel_name = name ; pdecl = d ; parity = args ; pctx_name = gamma })
   }

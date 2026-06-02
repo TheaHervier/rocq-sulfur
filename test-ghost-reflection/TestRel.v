@@ -11,7 +11,7 @@ Sulfur Generate
 }}.
 
 Ren Generate [[
-  Relation uconv : term -> term -> Prop Declaring unit in Γ;
+  Relation uconv : term -> term -> Prop, Declaring unit in Γ;
 
   Rule my_urefl :
     Variables : (t : term)
@@ -67,7 +67,7 @@ Ren Generate [[
 Print uconv.
 
 Ren Generate [[
-  Relation type : term -> term -> Prop Declaring term in Γ;
+  Relation type : term -> term -> Prop, Declaring term in Γ;
 
   Rule my_type_Ty :
     Variables : (n : nat)
@@ -103,7 +103,7 @@ Ren Generate [[
   Rule my_type_lam :
     Variables : (A B b : term)
     Premises :
-      Ind (extend (cons A nil) in type b B)
+      Ind (extend A in type b B)
     Conclusion :
       type (lam b) (Pi A B)
   ;
@@ -112,8 +112,8 @@ Ren Generate [[
 Print type.
 
 Ren Generate [[
-  Relation conv : term -> term -> term -> Prop Declaring term in Γ;
-  Relation typ : term -> term -> Prop Declaring term in Γ;
+  Relation conv : term -> term -> term -> Prop, Declaring term in Γ;
+  Relation typ : term -> term -> Prop, Declaring term in Γ;
 
   (* Conversion rules *)
   Rule my_refl :
@@ -155,7 +155,7 @@ Ren Generate [[
   Rule my_congr_lam :
     Variables : (b b' A B : term)
     Premises :
-      Ind (extend (cons A nil) in conv b b' B)
+      Ind (extend A in conv b b' B)
     Conclusion :
       conv (lam b) (lam b') (Pi A B)
   ;
@@ -163,7 +163,7 @@ Ren Generate [[
   Rule my_beta :
     Variables : (b u A B : term)
     Premises :
-      Ind (extend (cons A nil) in typ b B)
+      Ind (extend A in typ b B)
       Ind (typ u A)
     Conclusion :
       conv (app (lam b) u) (substitute (scons u sid) b) (substitute (scons u sid) B)
@@ -196,7 +196,7 @@ Ren Generate [[
   Rule my_typ_lam :
     Variables : (A B b : term)
     Premises :
-      Ind (extend (cons A nil) in typ b B)
+      Ind (extend A in typ b B)
     Conclusion :
       typ (lam b) (Pi A B)
   ;
