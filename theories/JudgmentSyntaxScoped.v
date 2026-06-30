@@ -311,7 +311,7 @@ Section WithSignature.
     (* Contexts in premises must be closed, and judgments must be scoped by the context *)
     Variant premise (i : I) :=
     | prem_pred (P : ctx (declF i) -> menv -> Prop)
-    | prem_ind i' (conv : declF i term -> declF i' term) {n} (Δ : mctx (declF i') 0 n) (j : mjdg (jdgF i') n).
+    | prem_ind i' (conv : forall X, declF i X -> declF i' X) {n} (Δ : mctx (declF i') 0 n) (j : mjdg (jdgF i') n).
     Derive NoConfusion for premise.
 
     (* The judgment of the conclusion must be closed *)
@@ -355,7 +355,7 @@ Section WithSignature.
       (
         forall i' {n} (Δ : mctx (declF i') 0 n) (j : mjdg (jdgF i') n) conv,
         In (prem_ind i i' conv Δ j) (r.(premises) x) ->
-        (inst_ctx m Δ ++ map conv Γ) ⊢(i') inst_jdg m j
+        (inst_ctx m Δ ++ map (conv term) Γ) ⊢(i') inst_jdg m j
       ) ->
       (* Satisfy all predicate premise, depending on Γ and m *)
       (
@@ -474,9 +474,9 @@ Section WithSignature.
     Derive Signature for rtyping.
 
     (* Hypothesis to add to signatures for them to preserve renaming *)
-    Class IsNat {i i'} (conv : declF i term -> declF i' term) := natural :
-    forall (f : term -> term) d,
-    fmap (declF i') f (conv d) = conv (fmap (declF i) f d).
+    Class IsNat {i i'} (conv : forall X, declF i X -> declF i' X) := natural :
+    forall {X Y} (f : X -> Y) (d : declF i X),
+    fmap (declF i') f (conv _ d) = conv Y (fmap (declF i) f d).
 
     Class RenJSig := {
       prem_ren :
@@ -589,9 +589,9 @@ Section WithSignature.
 
     Context {HRenSig : RenJSig}.
 
-    Lemma inctx_conv {i i'} (conv : declF i term -> declF i' term) {Hconv : IsNat conv} Γ n d :
+    Lemma inctx_conv {i i'} (conv : forall X, declF i X -> declF i' X) {Hconv : IsNat conv} Γ n d :
       Γ ∋ n : d ->
-      map conv Γ ∋ n : conv d.
+      map (conv _) Γ ∋ n : conv _ d.
     Proof.
       intros Hn. induction Hn in Hconv, conv |- *.
       - simpl. rewrite <- Hconv. constructor.
@@ -601,7 +601,7 @@ Section WithSignature.
 
     Lemma rtyping_conv {i i'} conv {Hconv : IsNat conv} Δ ρ Γ :
       Δ ⊢r(i) ρ : Γ ->
-      map conv Δ ⊢r(i') ρ : map conv Γ.
+      map (conv _) Δ ⊢r(i') ρ : map (conv _) Γ.
     Proof.
       intros Hi. induction Hi in conv, Hconv |- *.
       - constructor.
@@ -799,11 +799,11 @@ Section WithSignature.
     Qed.
 
     (* Hypothesis to add to signatures for them to preserve substitution *)
-    Class ConvMakeJdg {i i'} (conv : declF i term -> declF i' term) :=
+    Class ConvMakeJdg {i i'} (conv : forall X, declF i X -> declF i' X) :=
     conv_pres_makke_jdg :
-      forall Γ d t,
+      forall Γ (d : declF i term) t,
       Γ ⊢(i) make_jdg i term d t ->
-      map conv Γ ⊢(i') make_jdg i' term (conv d) t.
+      map (conv _) Γ ⊢(i') make_jdg i' term (conv _ d) t.
     Class SubstJSig := {
       prem_subst :
         forall i (r : rule i) x P,
@@ -939,7 +939,7 @@ Section WithSignature.
     Lemma styping_subst i i' Γ σ Δ conv {Hconv : IsNat conv} :
       ConvMakeJdg conv ->
       Δ ⊢s(i) σ : Γ ->
-      map conv Δ ⊢s(i') σ : map conv Γ.
+      map (conv _) Δ ⊢s(i') σ : map (conv _) Γ.
     Proof.
       intros Hconv_make Hi. induction Hi in Hconv_make, Hconv, conv |- *.
       - constructor.
@@ -1009,7 +1009,7 @@ Arguments SubstJSig {_ _ _ _ _ _} (_) {_}.
 #[export] Instance IdIsNat
   `{signature}
   `{IDecl unit} `{forall i : unit, FMap (declF i)} :
-  IsNat(I:=unit)(i':=tt) (fun d => d).
+  IsNat(I:=unit)(i':=tt) (fun _ d => d).
 Proof. constructor. Qed.
 
 #[export] Instance IdPresMakeJdg
@@ -1018,7 +1018,7 @@ Proof. constructor. Qed.
   `{IJdg unit} `{forall i : unit, FMap (jdgF i)}
   `{!IMakeJdg unit}
   `{jsig : !jdg_sig} :
-  @ConvMakeJdg _ unit _ _ _ _ jsig _ tt tt (fun d => d).
+  @ConvMakeJdg _ unit _ _ _ _ jsig _ tt tt (fun _ d => d).
 Proof.
   unfold ConvMakeJdg. intros.
   rewrite map_id. assumption.
@@ -1136,7 +1136,7 @@ Module LPConv.
   Definition tSym : rule(sig:=sig_lp) tt :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (t[], u[])
     ];
@@ -1145,10 +1145,10 @@ Module LPConv.
   Definition tTrans : rule(sig:=sig_lp) tt :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (t[], u[]) ;
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (u[], v[])
     ];
@@ -1158,10 +1158,10 @@ Module LPConv.
   Definition tCongrApp : rule tt :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (t[], t'[]) ;
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (u[], u'[])
     ];
@@ -1172,10 +1172,10 @@ Module LPConv.
   Definition tCongrPi : rule tt :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         mnil
         (A[], A'[]);
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         (mcons tt mnil)
         (B[var 0], B'[var 0])
     ];
@@ -1185,7 +1185,7 @@ Module LPConv.
   Definition tCongrLam : rule tt :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind tt (fun u => u)
+      prem_ind tt (fun _ u => u)
         (mcons tt mnil)
         (b[var 0], b'[var 0])
     ];
@@ -1302,10 +1302,10 @@ Module LambdaPi.
   {|
     premises := fun '(n, m) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         mnil
         (A[], T n) ;
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         (mcons(n:=0) (A[]) mnil)
         (B[var 0], T m)
     ] ;
@@ -1316,10 +1316,10 @@ Module LambdaPi.
   {|
     premises := fun (_ : unit) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         mnil
         (f[], Pi (A[]) (B[var 0]));
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         mnil
         (u[], A[])
     ];
@@ -1332,7 +1332,7 @@ Module LambdaPi.
   {|
     premises := fun (_ : unit) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         (mcons(n:=0) (A[]) mnil)
         (b[var 0], B[var 0])
     ];
@@ -1344,7 +1344,7 @@ Module LambdaPi.
   {|
     premises := fun (_ : unit) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         (mnil)
         (t[], A[]);
       prem_pred tt (fun Γ m =>
@@ -1372,12 +1372,26 @@ Module LambdaPi.
   #[warnings="-notation-overridden"]
   Notation "Δ ⊢s σ : Γ" := (styping(jsig:=typ_lampi) tt Δ σ Γ) (at level 70, σ at level 50).
 
-  Lemma typed_implies_refl Γ t A :
-    Γ ⊢ (t, A) ->
-    map (fun _ => tt) Γ ⊢ t ≡ t.
+  (* Something that appears multiple times, so making it a lemma might be useful *)
+  Lemma subst_minus_plus_zero :
+    (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid.
+  Proof. intro; unfold sid; f_equal; lia. Qed.
+
+  Lemma refl Γ t :
+    Γ ⊢ t ≡ t.
   Proof.
-    (* I don't really want to do this proof with this formalism, and it is not very interresting for the example *)
-  Admitted.
+    pose (m := fun k s =>
+      if k =? LPConv.nt then t else
+      default_menv k s
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor. exact m. exact tRefl. exact tt. repeat (try (left; reflexivity); right).
+    3: {cbn. setoid_rewrite nth_error_nil.
+      rewrite subst_minus_plus_zero. rewrite subst_sid. reflexivity.
+    }
+    - intros. noconf H.
+    - intros. noconf H.
+  Qed.
 
   Lemma styping_to_unit Δ σ Γ :
     Δ ⊢s σ : Γ ->
@@ -1389,13 +1403,8 @@ Module LambdaPi.
       + apply IHHσ.
       + unfold make_jdg, LpMakeJdg, ConvMakeJdg, fmap, FMapId in *.
         destruct i.
-        eapply typed_implies_refl. apply H.
+        apply refl.
   Qed.
-
-  (* Something that appears multiple times, so making it a lemma might be useful *)
-  Lemma subst_minus_plus_zero :
-    (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid.
-  Proof. intro; unfold sid; f_equal; lia. Qed.
 
   (* This is the instance we need if we want to use preservation by substitution and renaming *)
   Instance LPTypSubst : SubstJSig typ_lampi.
@@ -1573,10 +1582,10 @@ Module SimplLambda.
   {|
     premises := fun '(A, B) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         mnil
         (f[], sArrow A B);
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         mnil
         (u[], A)
     ];
@@ -1588,7 +1597,7 @@ Module SimplLambda.
   {|
     premises := fun '(A, B) =>
     [
-      prem_ind tt (fun A => A)
+      prem_ind tt (fun _ A => A)
         (mcons(n:=0) A mnil)
         (b[var 0], B)
     ];
@@ -1799,14 +1808,14 @@ Module LPEta.
     ];
     conclusion := _
   |}.
-  exact (fun u => u).
+  exact (fun _ u => u).
   exact (fun _ => (t[], t[], A[])).
   Defined.
 
   Definition tSym : rule(sig:=sig_lp) Conversion :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (t[], u[], A[])
     ];
@@ -1815,10 +1824,10 @@ Module LPEta.
   Definition tTrans : rule(sig:=sig_lp) Conversion :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (t[], u[], A[]) ;
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (u[], v[], A[])
     ];
@@ -1828,10 +1837,10 @@ Module LPEta.
   Definition tCongrApp : rule Conversion :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (t[], t'[], Pi (A[]) (B[var 0])) ;
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (u[], u'[], A[])
     ];
@@ -1841,10 +1850,10 @@ Module LPEta.
   Definition tCongrPi : rule Conversion :=
   {|
     premises := fun '(n, m) => [
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         mnil
         (A[], A'[], T n) ;
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         (mcons (T n) mnil)
         (B[var 0], B'[var 0], T m)
     ];
@@ -1855,7 +1864,7 @@ Module LPEta.
   Definition tCongrLam : rule Conversion :=
   {|
     premises := fun (_ : unit) => [
-      prem_ind Conversion (fun u => u)
+      prem_ind Conversion (fun _ u => u)
         (mcons (A[]) mnil)
         (b[var 0], b'[var 0], B[var 0])
     ];
@@ -1875,8 +1884,8 @@ Module LPEta.
     ];
     conclusion := fun (t : unit) => _
   |}.
-  - exact (fun u => u).
-  - exact (fun u => u).
+  - exact (fun _ u => u).
+  - exact (fun _ u => u).
   - exact (App (lambda (b[var 0])) (u[]), b[u[]], B[u[]]).
   Defined.
 
@@ -1889,7 +1898,7 @@ Module LPEta.
     ];
     conclusion := fun _ => _
   |}.
-  - exact (fun u => u).
+  - exact (fun _ u => u).
   - exact (f[], lambda (App (f[]) (var 0)), Pi (A[]) (B[var 0])).
   Defined.
 
@@ -1906,10 +1915,10 @@ Module LPEta.
   {|
     premises := fun '(n, m) =>
     [
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         mnil
         (A[], T n) ;
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         (mcons(n:=0) (A[]) mnil)
         (B[var 0], T m)
     ] ;
@@ -1920,10 +1929,10 @@ Module LPEta.
   {|
     premises := fun (_ : unit) =>
     [
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         mnil
         (f[], Pi (A[]) (B[var 0]));
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         mnil
         (u[], A[])
     ];
@@ -1935,7 +1944,7 @@ Module LPEta.
   {|
     premises := fun (_ : unit) =>
     [
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         (mcons(n:=0) (A[]) mnil)
         (b[var 0], B[var 0])
     ];
@@ -1947,7 +1956,7 @@ Module LPEta.
   {|
     premises := fun (n : nat) =>
     [
-      prem_ind Typing (fun A => A)
+      prem_ind Typing (fun _ A => A)
         (mnil)
         (t[], A[]);
       prem_ind Conversion _
@@ -1957,7 +1966,7 @@ Module LPEta.
     conclusion := fun _ =>
       (t[], A'[])
   |}.
-  exact (fun u => u).
+  exact (fun _ u => u).
   Defined.
 
   Definition typ_lampi : jdg_sig := {|rules:=
@@ -1984,13 +1993,48 @@ Module LPEta.
   #[warnings="-notation-overridden"]
   Notation "Γ ⊢ t : A" := (proof(jsig:=typ_lampi) Typing Γ (t, A)) (at level 70, t at level 50).
 
+  Lemma subst_minus_plus_zero :
+    (fun i => E_var(sig:=sig_lp) (i - 0 + 0)) =₁ sid.
+  Proof. intro; unfold sid; f_equal; lia. Qed.
+
+  Lemma typed_refl Γ t A :
+    Γ ⊢ t : A ->
+    Γ ⊢ t ≡ t : A.
+  Proof.
+    intro.
+    pose (m := fun k s =>
+      if k =? nt then t else
+      if k =? nA then A else
+      default_menv k s
+    ).
+    eapply conv_proof_j.
+    unshelve econstructor. exact m. exact tRefl. exact tt. repeat (try (left; reflexivity); right).
+    3: {cbn. setoid_rewrite nth_error_nil.
+      rewrite subst_minus_plus_zero. rewrite !subst_sid. reflexivity.
+    }
+    - intros. destruct_n H0. noconf H0.
+      rewrite map_id. simpl. cbn.
+      setoid_rewrite nth_error_nil. rewrite subst_minus_plus_zero.
+      rewrite !subst_sid.
+      assumption.
+    - intros. destruct_n H0. noconf H0.
+  Qed.
+
+  Lemma conv_typed Γ s t A :
+    Γ ⊢ t ≡ s : A ->
+    Γ ⊢ t : A.
+  Proof.
+    (* We do not want to do the proof in this framework: indeed, we need an induction on [Γ ⊢ t ≡ s : A], which will be very heavy here. We would prefer to do the proof in the "nice" Rocq inductive of the relation, then transfer it to the parametric world *)
+  Admitted.
+
   Instance LPSubst : SubstJSig typ_lampi.
     constructor; intros; destruct i; destruct_n H; subst; try destruct x; destruct_n H0; try now inversion H0; try typeclasses eauto.
     all: noconf H0;
     unfold ConvMakeJdg; intros; rewrite map_id; try assumption;
     unfold make_jdg, LpMakeJdg in *.
-    all: admit. (* These are theorems we don't want to prove in this setting *)
-  Admitted.
+    all: try apply typed_refl; try assumption.
+    all: eapply conv_typed; apply H.
+  Qed.
 
   (* Sanity check *)
   Lemma beta_rev n :
