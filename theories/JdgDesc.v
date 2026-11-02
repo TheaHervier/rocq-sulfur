@@ -127,11 +127,11 @@ Section HOAS.
 
   Context {sig : signature}.
 
-  (* When adding support for binders, make it ∀ s, mexpr Kt s *)
-  Definition hterm := mexpr Kt 0.
+  (* Term in any scope *)
+  Definition hterm := ∀ s, mexpr Kt s.
 
   (* Meta-variable [k], arity [0] *)
-  Definition hmvar (k : mvar) := M_mvar 0 k [].
+  Definition hmvar (k : mvar) : hterm := λ s, M_mvar s k [].
 
   (* For now not supporting binders *)
   Definition harg (a : arg_ty) :=
@@ -147,22 +147,23 @@ Section HOAS.
     | a :: l => harg a → curry l
     end.
 
-  Definition harg_inst (a : arg_ty) : harg a → mexpr (Ka a) 0 :=
+  Definition harg_inst s (a : arg_ty) : harg a → mexpr (Ka a) s :=
     match a with
     | AT_base b => λ x, M_abase _ _ x
-    | AT_term => λ t, M_aterm _ t
+    | AT_term => λ t, M_aterm _ (t s)
     | AT_bind a => False_rect _ (* λ x, M_abind _ (harg_inst a x) *)
     end.
 
-  Fixpoint hctor_aux (l : list arg_ty) : (mexpr (Kal l) 0 → hterm) → curry l :=
+  Fixpoint hctor_aux (l : list arg_ty) : ((∀ s, mexpr (Kal l) s) → hterm) → curry l :=
     match l with
-    | [] => λ f, f (M_al_nil _)
-    | a :: l => λ f x, hctor_aux l (λ al, f (M_al_cons _ (harg_inst _ x) al))
+    | [] => λ f, f (λ s, M_al_nil _)
+    | a :: l =>
+      λ f x, hctor_aux l (λ al, f (λ s, M_al_cons _ (harg_inst _ _ x) (al s)))
     end.
 
   (* Constructor applied to its arguments *)
   Definition hctor (c : ctor) : curry (ctor_type c) :=
-    hctor_aux _ (M_ctor _ c).
+    hctor_aux _ (λ f s, M_ctor _ c (f s)).
 
   Definition rp_ty p :=
     match p with
@@ -192,7 +193,7 @@ Section HOAS.
   |}.
 
   Definition hjdg (t A : hterm) : mjdgd 0 :=
-    (t, A).
+    (t 0, A 0).
 
 End HOAS.
 
