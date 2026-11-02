@@ -115,6 +115,8 @@ end
 (**************************************************************************************)
 
 module Jdg = struct
+  let rp_term = resolve "sulfur.jdg.rp_term"
+  let rp_param = resolve "sulfur.jdg.rp_param"
   let rule_desc = resolve "sulfur.jdg.rule_desc"
   let build_rule_desc = resolve "sulfur.jdg.build_rule_desc"
   let jdg_desc = resolve "sulfur.jdg.jdg_desc"

@@ -24,11 +24,24 @@ Section Desc.
   Definition mjdgd sc : Type :=
     (mexpr Kt sc * mexpr Kt sc).
 
+  (** Rule parameter *)
+  Inductive rule_param :=
+  | rp_term
+  | rp_param (A : Type).
+
+  (** Conjunction of true parameters *)
+  Fixpoint params ps : Type :=
+    match ps with
+    | [] => unit
+    | rp_term :: ps => params ps
+    | rp_param A :: ps => A * params ps
+    end.
+
   Record rule_desc := {
     rd_name : string ;
-    rd_mvars : nat ;
-    rd_premises : list (mjdgd 0) ;
-    rd_conclusion : mjdgd 0
+    rd_params : list rule_param ;
+    rd_premises : params rd_params → list (mjdgd 0) ;
+    rd_conclusion : params rd_params → mjdgd 0
   }.
 
   Definition jdg_desc :=
@@ -54,9 +67,10 @@ Section ToSig.
     λ _ X, (X * X)%type.
 
   Definition to_rule (rd : rule_desc) : rule tt := {|
-    param  := unit ;
-    premises := λ _, map (λ j, prem_ind tt (λ X x, x) mnil j) rd.(rd_premises) ;
-    conclusion := λ _, rd.(rd_conclusion)
+    param  := params rd.(rd_params) ;
+    premises :=
+      λ x, map (λ j, prem_ind tt (λ X x, x) mnil j) (rd.(rd_premises) x) ;
+    conclusion := rd.(rd_conclusion)
   |}.
 
   (* Somehow, universe issues prevent using List.map directly *)
@@ -150,24 +164,31 @@ Section HOAS.
   Definition hctor (c : ctor) : curry (ctor_type c) :=
     hctor_aux _ (M_ctor _ c).
 
-  Fixpoint hfun n R :=
-    match n with
-    | 0 => R
-    | S n => hterm → hfun n R
+  Definition rp_ty p :=
+    match p with
+    | rp_term => hterm
+    | rp_param A => A
+    end.
+
+  Fixpoint hfun ps R :=
+    match ps with
+    | [] => R
+    | p :: ps => rp_ty p → hfun ps R
     end.
 
   (* Apply an [hfun] to meta-variables starting from [k] *)
-  Fixpoint happly {R} n (k : mvar) : hfun n R → R :=
-    match n with
-    | 0 => λ x, x
-    | S n => λ f, happly n (S k) (f (hmvar k))
+  Fixpoint happly {R} ps (k : mvar) : hfun ps R → params ps → R :=
+    match ps with
+    | [] => λ x _, x
+    | rp_term :: ps => λ f, happly ps (S k) (f (hmvar k))
+    | rp_param A :: ps => λ f x, happly ps k (f (fst x)) (snd x)
     end.
 
-  Definition hrule name n pr concl : rule_desc := {|
+  Definition hrule name ps pr_cl : rule_desc := {|
     rd_name := name ;
-    rd_mvars := n ;
-    rd_premises := happly n 0 pr ;
-    rd_conclusion := happly n 0 concl
+    rd_params := ps ;
+    rd_premises := λ x, fst (happly ps 0 pr_cl x) ;
+    rd_conclusion := λ x, snd (happly ps 0 pr_cl x)
   |}.
 
   Definition hjdg (t A : hterm) : mjdgd 0 :=
@@ -183,14 +204,15 @@ Section Lemmas.
 
   (* [inst m (M_mvar 0 k [])] unfolds to a substitution by this identity. *)
   Lemma subst_nil_id (t : expr Kt) :
-    ParamSyntax.substitute
-      (λ i, match nth_error [] i with Some t => t | None => E_var (i - 0 + 0) end)
-      t
-    = t.
+    substitute (λ i,
+      match nth_error [] i with
+      | Some t => t
+      | None => E_var (i - 0 + 0)
+    end) t = t.
   Proof.
     etransitivity. 2: apply subst_sid.
     apply substitute_proper. 2: reflexivity.
-    intro i. unfold ParamSyntax.sid.
+    intro i. unfold sid.
     destruct i. all: cbn. all: f_equal.
     lia.
   Qed.
@@ -232,10 +254,11 @@ Section ConcreteJdg.
     J Γ (cinst ι (fst j)) (cinst ι (snd j)).
 
   (** [∀ x1 ... xn, K [x1; ...; xn]]. *)
-  Fixpoint under (n : nat) (ms : list T) (K : list T → Prop) : Prop :=
-    match n with
-    | 0 => K (rev ms)
-    | S n => ∀ x, under n (x :: ms) K
+  Fixpoint under ps (ms : list T) : (list T → params ps → Prop) → Prop :=
+    match ps with
+    | [] => λ K, K (rev ms) tt
+    | rp_term :: ps => λ K, ∀ x, under ps (x :: ms) K
+    | rp_param A :: ps => λ K, ∀ (a : A), under ps ms (λ l p, K l (a, p))
     end.
 
   Definition dummy : T :=
@@ -245,11 +268,11 @@ Section ConcreteJdg.
     λ i, nth i vs dummy.
 
   Definition rule_desc_type (rd : rule_desc) (Γ : list T) : Prop :=
-    under rd.(rd_mvars) [] (λ vs,
+    under rd.(rd_params) [] (λ vs x,
       fold_right
         (λ P Q, P → Q)
-        (conc_jdg Γ (nvar vs) rd.(rd_conclusion))
-        (map (conc_jdg Γ (nvar vs)) rd.(rd_premises))
+        (conc_jdg Γ (nvar vs) (rd.(rd_conclusion) x))
+        (map (conc_jdg Γ (nvar vs)) (rd.(rd_premises) x))
     ).
 
   Inductive cinctx (sh : T → T) : list T → nat → T → Prop :=
@@ -259,27 +282,44 @@ Section ConcreteJdg.
   Definition var_rule_type :=
     ∀ Γ n A, cinctx (crename rshift) Γ n A → J Γ (cvar n) A.
 
-  Lemma under_iff n ms K :
-    (∀ vs, List.length vs = n → K (rev ms ++ vs)) ↔ under n ms K.
+  Fixpoint nterms ps : nat :=
+    match ps with
+    | [] => 0
+    | rp_term :: ps => S (nterms ps)
+    | rp_param _ :: ps => nterms ps
+    end.
+
+  Lemma under_iff ps ms K :
+    (∀ vs x, List.length vs = nterms ps → K (rev ms ++ vs) x) ↔ under ps ms K.
   Proof.
     split.
     - intros h.
-      induction n as [| n ih] in ms, K, h |- *.
+      induction ps as [| [| A] ps ih] in ms, K, h |- *.
       + cbn.
-        specialize h with (vs := []) (1 := eq_refl).
+        specialize h with (vs := []) (x := tt) (1 := eq_refl).
         rewrite app_nil_r in h. assumption.
       + cbn. intros x.
-        apply ih. intros vs hvs.
+        apply ih. intros vs y hvs.
         cbn. rewrite <- app_assoc. cbn. apply h.
         cbn. lia.
-    - intros h vs hl.
-      induction n as [| n ih] in ms, K, h, vs, hl |- *.
-      + cbn in h. destruct vs. 2: discriminate.
+      + cbn. intros a.
+        apply ih. intros vs x e.
+        apply h. cbn. assumption.
+    - intros h vs x hl.
+      induction ps as [| [| A] ps ih] in x, ms, K, h, vs, hl |- *.
+      + cbn in h. destruct x.
+        destruct vs. 2: discriminate.
         rewrite app_nil_r. assumption.
-      + cbn in h. destruct vs as [| v vs]. 1: discriminate.
+      + cbn in h.
+        destruct vs as [| v vs]. 1: discriminate.
         cbn in hl. injection hl as e.
         specialize (h v). eapply ih in h. 2: eassumption.
-        cbn in h. rewrite <- app_assoc in h. assumption.
+        cbn in h. rewrite <- app_assoc in h. eassumption.
+      + cbn in h, x.
+        destruct x as [a x]. specialize (h a).
+        cbn in hl.
+        eapply ih in h. 2: eassumption.
+        eassumption.
   Qed.
 
 End ConcreteJdg.
@@ -294,11 +334,11 @@ Section Ind.
 
   (* Like [rule_desc_type] but collecting induction hypotheses *)
   Definition rule_ind_case P (rd : rule_desc) (Γ : list T) : Prop :=
-    under rd.(rd_mvars) [] (λ vs,
+    under rd.(rd_params) [] (λ vs x,
       fold_right
         (λ j K, conc_jdg J Γ (nvar vs) j → conc_jdg P Γ (nvar vs) j → K)
-        (conc_jdg P Γ (nvar vs) rd.(rd_conclusion))
-        rd.(rd_premises)
+        (conc_jdg P Γ (nvar vs) (rd.(rd_conclusion) x))
+        (rd.(rd_premises) x)
     ).
 
   Definition ind_type :=
@@ -411,12 +451,15 @@ Section ConcreteFacts.
   Definition wf_jdg m (j : mjdgd 0) :=
     wf_mexpr m (fst j) && wf_mexpr m (snd j).
 
-  Definition wf_rule rd :=
-    forallb (wf_jdg rd.(rd_mvars)) rd.(rd_premises) &&
-    wf_jdg rd.(rd_mvars) rd.(rd_conclusion).
+  Definition wf_rule_at rd x :=
+    forallb (wf_jdg (nterms rd.(rd_params))) (rd.(rd_premises) x) &&
+    wf_jdg (nterms rd.(rd_params)) (rd.(rd_conclusion) x).
 
-  Definition wf_desc : Prop :=
-    forallb wf_rule desc.
+  Definition wf_rule rd :=
+    ∀ x, wf_rule_at rd x = true.
+
+  Definition wf_desc :=
+    Forall wf_rule desc.
 
   Lemma wf_desc_rule rd :
     wf_desc →
@@ -424,8 +467,8 @@ Section ConcreteFacts.
     wf_rule rd.
   Proof.
     intros h hin.
-    unfold wf_desc in h. unfold is_true in h.
-    rewrite forallb_forall in h. auto.
+    unfold wf_desc in h. rewrite Forall_forall in h.
+    apply h. assumption.
   Qed.
 
   Lemma sound_step rd Γ :
@@ -434,15 +477,16 @@ Section ConcreteFacts.
     rule_desc_type J rd Γ.
   Proof.
     intros h hwf.
-    red in hwf. unfold wf_rule, wf_jdg in hwf. rewrite !andb_true_iff in hwf.
-    destruct hwf as (hwp & hwt & hwA).
-    red. rewrite <- under_iff. intros vs hvs. cbn.
+    red. rewrite <- under_iff. intros vs x hvs. cbn.
     rewrite <- fold_impl_iff. intros hF.
     rewrite Forall_map in hF.
+    red in hwf. specialize (hwf x).
+    unfold wf_rule_at, wf_jdg in hwf. rewrite !andb_true_iff in hwf.
+    destruct hwf as (hwp & hwt & hwA).
     unfold conc_jdg, J, Pf. cbn.
     erewrite 2!rf_cinst_t. 2,3: eassumption.
     eapply conv_proof_j.
-    - eapply step with (r := to_rule rd) (m := λ k _, creify (nvar vs k)) (x := tt).
+    - eapply step with (r := to_rule rd) (m := λ k _, creify (nvar vs k)) (x := x).
       + apply in_to_rules_intro. assumption.
       + intros i' n Δ j conv hin. cbn in hin.
         rewrite in_map_iff in hin. destruct hin as [[t A] [hj hj']]. noconf hj.
@@ -506,7 +550,7 @@ Section ConcreteFacts.
     rule_ind_case R P rd Γ.
   Proof.
     unfold rule_desc_type, rule_ind_case.
-    rewrite <- !under_iff. intros h vs hl. specialize (h vs hl).
+    rewrite <- !under_iff. intros h vs x hl. specialize (h vs x hl).
     cbn in *.
     induction (rd_premises rd) as [| j l ih] in h |- *.
     - exact h.
@@ -625,12 +669,14 @@ Section ConcreteFacts.
         eapply wf_desc_rule in hwf. 2: exact hin.
         unfold rules_type in hrules. rewrite Forall_forall in hrules.
         specialize (hrules _ hin (map ceval Γ)).
-        unfold is_true, wf_rule, wf_jdg in hwf. rewrite !andb_true_iff in hwf.
+        specialize (hwf x). unfold wf_rule, wf_rule_at, wf_jdg in hwf.
+        rewrite !andb_true_iff in hwf.
         destruct hwf as (hwp & hwt & hwA).
-        destruct rd as [name m prems [t A]]. cbn in *.
+        destruct rd as [name ps prems concl]. cbn in *.
         rewrite <- under_iff in hrules.
-        specialize hrules with (1 := ev_vs_length m me).
+        specialize hrules with (x := x) (1 := ev_vs_length (nterms ps) me).
         rewrite <- fold_impl_iff in hrules. cbn in hrules.
+        destruct (concl x) as [t A]. cbn.
         unfold conc_jdg in hrules. cbn in hrules.
         unfold fmap, FMapId.
         erewrite !ev_inst. 2,3: eassumption.
@@ -642,7 +688,7 @@ Section ConcreteFacts.
         specialize (ih tt 0 mnil (t', A') (λ X x, x)).
         specialize ih with (1 := in_map (λ j, prem_ind tt (λ X x, x) mnil j) _ _ hj').
         cbn in ih. unfold fmap, FMapId in ih. rewrite map_id in ih.
-        rewrite 2!(ev_inst m me) in ih. 2,3: assumption.
+        rewrite 2!(ev_inst (nterms ps) me) in ih. 2,3: assumption.
         exact ih.
       - cbn. rewrite ev_var.
         apply hvar. apply inctx_cinctx. assumption.
@@ -688,3 +734,10 @@ Section ConcreteFacts.
   End Preservation.
 
 End ConcreteFacts.
+
+(** Tactics for the plugin *)
+
+(** Prove [wf_desc] *)
+Ltac wf_desc_tac :=
+  repeat constructor ;
+  intro ; reflexivity.

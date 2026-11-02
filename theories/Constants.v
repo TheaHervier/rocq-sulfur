@@ -118,6 +118,8 @@ Register ConcreteSyntax.ConcreteSyntax as sulfur.cs.type.
 
 (** JdgDesc *)
 
+Register JdgDesc.rp_term as sulfur.jdg.rp_term.
+Register JdgDesc.rp_param as sulfur.jdg.rp_param.
 Register JdgDesc.rule_desc as sulfur.jdg.rule_desc.
 Register JdgDesc.Build_rule_desc as sulfur.jdg.build_rule_desc.
 Register JdgDesc.jdg_desc as sulfur.jdg.jdg_desc.
