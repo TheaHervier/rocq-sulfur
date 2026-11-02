@@ -299,9 +299,16 @@ let desc_expr (name : Names.Id.t) (rules : prule list) :
     List.fold_right cons l (const C.nil)
   in
   let pair a b = mkAppC (const C.pair, [ a ; b ]) in
-  (* A binder [(x : term)] is a meta-variable, any other type is a parameter;
-     the sort may not occur in it, since [term] denotes [hterm] here. *)
+  (* A binder [(x : term)] or [x] (no type) is a meta-variable, any other type
+    is a parameter; the sort may not occur in it. *)
   let sort = sign.Signature.sort_name in
+  (* Force annotation-free binders to be the sort *)
+  let typed b =
+    match b with
+    | Constrexpr.CLocalAssum (xs, r, k, { CAst.v = Constrexpr.CHole _ ; _ }) ->
+      Constrexpr.CLocalAssum (xs, r, k, mkIdentC sort)
+    | b -> b
+  in
   let param (ty : Constrexpr.constr_expr) =
     match ty.CAst.v with
     | Constrexpr.CRef (q, None)
@@ -313,8 +320,8 @@ let desc_expr (name : Names.Id.t) (rules : prule list) :
         "A parameter type cannot mention the sort %s." (Names.Id.to_string sort)
     | _ -> mkAppC (const C.Jdg.rp_param, [ ty ])
   in
-  let params r =
-    r.pr_binders |> List.concat_map @@ fun b ->
+  let params bs =
+    bs |> List.concat_map @@ fun b ->
       match b with
       | Constrexpr.CLocalAssum (xs, _, _, ty) ->
         List.map (fun _ -> param ty) xs
@@ -323,11 +330,11 @@ let desc_expr (name : Names.Id.t) (rules : prule list) :
         Log.error ?loc "Rule binders must be assumptions (x : A)."
   in
   let rule r =
-    let lam = mkCLambdaN r.pr_binders in
+    let bs = List.map typed r.pr_binders in
     mkAppC (const C.Jdg.hrule, [
       string (Names.Id.to_string r.pr_name) ;
-      list (params r) ;
-      lam (pair (list r.pr_prems) r.pr_concl)
+      list (params bs) ;
+      mkCLambdaN bs (pair (list r.pr_prems) r.pr_concl)
     ])
   in
   let hctor i =

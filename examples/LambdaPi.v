@@ -17,14 +17,14 @@ Sulfur Syntax {{
 Existing Instance sign.
 
 Sulfur Judgment typing {{
-| type_Ty i :
+| type_Ty (i : nat) :
     ⟹ typing (tTy i) (tTy (S i))
 
-(* | type_Pi i j A B :
+(* | type_Pi (i j : nat) A B :
     typing A (tTy i)
     ⟹ typing (tPi A B) (tTy (max i j)) *)
 
-(* | type_lam i j A B t : *)
+(* | type_lam (i j : nat) A B t : *)
 
 (* | type_app A B f u :
     typing f (tPi A B) ;
