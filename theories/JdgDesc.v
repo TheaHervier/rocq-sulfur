@@ -24,16 +24,16 @@ Section Desc.
   Definition mjdgd sc : Type :=
     (mexpr Kt sc * mexpr Kt sc).
 
-  (** Rule parameter *)
+  (** Rule parameter: a meta-variable of arity [n] or a true parameter *)
   Inductive rule_param :=
-  | rp_term
+  | rp_term (n : nat)
   | rp_param (A : Type).
 
   (** Conjunction of true parameters *)
   Fixpoint params ps : Type :=
     match ps with
     | [] => unit
-    | rp_term :: ps => params ps
+    | rp_term _ :: ps => params ps
     | rp_param A :: ps => A * params ps
     end.
 
@@ -130,8 +130,22 @@ Section HOAS.
   (* Term in any scope *)
   Definition hterm := ∀ s, mexpr Kt s.
 
-  (* Meta-variable [k], arity [0] *)
-  Definition hmvar (k : mvar) : hterm := λ s, M_mvar s k [].
+  (* [n]-ary [hterm] *)
+  Fixpoint hterm_n n :=
+    match n with
+    | 0 => hterm
+    | S n => hterm → hterm_n n
+    end.
+
+  Fixpoint hmvar_aux (k : mvar) n (l : list hterm) : hterm_n n :=
+    match n with
+    | 0 => λ s, M_mvar s k (map (λ t, t s) l)
+    | S n => λ x, hmvar_aux k n (x :: l)
+    end.
+
+  (* Meta-variable [k], arity [n] *)
+  Definition hmvar (k : mvar) n : hterm_n n :=
+    hmvar_aux k n [].
 
   (* For now not supporting binders *)
   Definition harg (a : arg_ty) :=
@@ -167,7 +181,7 @@ Section HOAS.
 
   Definition rp_ty p :=
     match p with
-    | rp_term => hterm
+    | rp_term n => hterm_n n
     | rp_param A => A
     end.
 
@@ -181,7 +195,7 @@ Section HOAS.
   Fixpoint happly {R} ps (k : mvar) : hfun ps R → params ps → R :=
     match ps with
     | [] => λ x _, x
-    | rp_term :: ps => λ f, happly ps (S k) (f (hmvar k))
+    | rp_term n :: ps => λ f, happly ps (S k) (f (hmvar k n))
     | rp_param A :: ps => λ f x, happly ps k (f (fst x)) (snd x)
     end.
 
@@ -258,7 +272,7 @@ Section ConcreteJdg.
   Fixpoint under ps (ms : list T) : (list T → params ps → Prop) → Prop :=
     match ps with
     | [] => λ K, K (rev ms) tt
-    | rp_term :: ps => λ K, ∀ x, under ps (x :: ms) K
+    | rp_term _ :: ps => λ K, ∀ x, under ps (x :: ms) K
     | rp_param A :: ps => λ K, ∀ (a : A), under ps ms (λ l p, K l (a, p))
     end.
 
@@ -286,7 +300,7 @@ Section ConcreteJdg.
   Fixpoint nterms ps : nat :=
     match ps with
     | [] => 0
-    | rp_term :: ps => S (nterms ps)
+    | rp_term _ :: ps => S (nterms ps)
     | rp_param _ :: ps => nterms ps
     end.
 
