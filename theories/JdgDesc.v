@@ -249,29 +249,6 @@ Section HOAS.
 
 End HOAS.
 
-(** Generic lemmas *)
-
-Section Lemmas.
-
-  Context {sig : signature}.
-
-  (* [inst m (M_mvar 0 k [])] unfolds to a substitution by this identity. *)
-  Lemma subst_nil_id (t : expr Kt) :
-    substitute (λ i,
-      match nth_error [] i with
-      | Some t => t
-      | None => E_var (i - 0 + 0)
-    end) t = t.
-  Proof.
-    etransitivity. 2: apply subst_sid.
-    apply substitute_proper. 2: reflexivity.
-    intro i. unfold sid.
-    destruct i. all: cbn. all: f_equal.
-    lia.
-  Qed.
-
-End Lemmas.
-
 (** Instantiate mexpr to concrete syntax *)
 
 Section Inst.
