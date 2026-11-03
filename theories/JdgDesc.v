@@ -252,6 +252,22 @@ Section Inst.
 
   Context (ι : mvar → T).
 
+  (* Fast path: do not substitute by the identity.
+
+    We thus detect whether [σ] is [ var i ; … ; var (i + n - 1) ].
+
+  *)
+  Fixpoint is_id {s} n i (σ : list (mexpr Kt s)) : bool :=
+    match n, σ with
+    | 0, [] => true
+    | S n, M_var _ j _ :: σ => (i =? j) && is_id n (S i) σ
+    | _, _ => false
+    end.
+
+  (* Turn a list into a substitution, lifting outside by [s] *)
+  Definition csub s (σ : list T) (i : nat) : T :=
+    nth i σ (cvar (s + i)).
+
   Fixpoint cinst {k s} (e : mexpr k s) {struct e} : ckind T k :=
     match e with
     | M_var _ i h => cvar i
@@ -261,7 +277,9 @@ Section Inst.
     | M_abase _ b x => x
     | M_aterm _ t => cinst t
     | M_abind _ a => cinst a
-    | M_mvar s k σ => ι k (* TODO Fix σ which is dropped *)
+    | M_mvar s k σ =>
+      if is_id s 0 σ then ι k
+      else csubstitute (csub s (map cinst σ)) (ι k)
     end.
 
 End Inst.
