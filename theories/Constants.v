@@ -17,6 +17,7 @@ Register pair as sulfur.prod.pair.
 Register nat as sulfur.nat.type.
 Register O as sulfur.nat.zero.
 Register S as sulfur.nat.succ.
+Register Nat.sub as sulfur.nat.sub.
 
 Register list as sulfur.list.type.
 Register nil as sulfur.list.nil.

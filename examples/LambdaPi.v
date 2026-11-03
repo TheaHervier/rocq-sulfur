@@ -16,20 +16,30 @@ Sulfur Syntax {{
 
 Existing Instance sign.
 
+Sulfur Judgment conv {{
+| beta A (b : tm → tm) u :
+    ⟹ conv (tapp (tlam A b) u) (b u)
+| congr_lam A A' (b b' : tm → tm) :
+    conv A A'
+    ⟹ conv (tlam A b) (tlam A' b')
+}}.
+
 Sulfur Judgment typing {{
 | type_Ty (i : nat) :
     ⟹ typing (tTy i) (tTy (S i))
 
-(* | type_Pi (i j : nat) A B :
+| type_Pi (i j : nat) A (B : tm → tm) :
     typing A (tTy i)
-    ⟹ typing (tPi A B) (tTy (max i j)) *)
+    ⟹ typing (tPi A B) (tTy (max i j))
 
-(* | type_lam (i j : nat) A B t : *)
+| type_lam (i j : nat) A (B t : tm → tm) :
+    typing A (tTy i)
+    ⟹ typing (tlam A t) (tPi A B)
 
-(* | type_app A B f u :
+| type_app A (B : tm → tm) f u :
     typing f (tPi A B) ;
     typing u A
-    ⟹ typing (tapp f u) A *)
+    ⟹ typing (tapp f u) (B u)
 }}.
 
 Print typing_desc.

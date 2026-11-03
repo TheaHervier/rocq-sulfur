@@ -91,7 +91,8 @@ let generate_desc (name : Names.Id.t) (desc : EConstr.t) : unit =
       let* rules = decode_list desc in
       let* rules = List.monad_map decode_rule rules in
       (* The constants which stay folded in the statements: the description, the
-        operations of the syntax, the renamings and the generic judgment [J]. *)
+        operations of the syntax, the renamings, the generic judgment [J],
+        and [Nat.sub] which would otherwise pollute [csub]. *)
       let* ops = decode_cs_ops cs in
       let* opaque = List.monad_map head_const (desc :: ops) in
       let opaque =
@@ -102,7 +103,8 @@ let generate_desc (name : Names.Id.t) (desc : EConstr.t) : unit =
           C.rcons ;
           C.rcomp ;
           C.up_ren ;
-          C.Jdg.j
+          C.Jdg.j ;
+          C.sub
         ]
       in
       (* The constants the statements may unfold: those reachable from the
@@ -204,7 +206,6 @@ let generate_desc (name : Names.Id.t) (desc : EConstr.t) : unit =
           desc ;
           cl ;
           r ;
-          mkconst wf ;
           mkconst scheme
         |]
       ))
@@ -294,6 +295,10 @@ let desc_expr (name : Names.Id.t) (rules : prule list) :
     CAst.make (Constrexpr.CDelimiters (depth, scope, p))
   in
   let string s = prim "string" (Constrexpr.String s) in
+  let nat n =
+    let n = NumTok.Signed.of_int_string (string_of_int n) in
+    prim "nat" (Constrexpr.Number n)
+  in
   let list l =
     let cons x l = mkAppC (const C.cons, [ x ; l ]) in
     List.fold_right cons l (const C.nil)
@@ -309,16 +314,41 @@ let desc_expr (name : Names.Id.t) (rules : prule list) :
       Constrexpr.CLocalAssum (xs, r, k, mkIdentC sort)
     | b -> b
   in
-  let param (ty : Constrexpr.constr_expr) =
+  let is_sort (ty : Constrexpr.constr_expr) =
     match ty.CAst.v with
-    | Constrexpr.CRef (q, None)
-      when Libnames.qualid_is_ident q &&
-        Names.Id.equal (Libnames.qualid_basename q) sort ->
-      const C.Jdg.rp_term
-    | _ when Constrexpr_ops.occur_var_constr_expr sort ty ->
+    | Constrexpr.CRef (q, None) ->
+      Libnames.qualid_is_ident q &&
+      Names.Id.equal (Libnames.qualid_basename q) sort
+    | _ -> false
+  in
+  (* The arity of a meta-variable type [term → ... → term], if it is one.
+    [->] parses as a product, [→] as the notation of [Utf8_core]. *)
+  let rec arity (ty : Constrexpr.constr_expr) : int option =
+    if is_sort ty then Some 0
+    else
+      match ty.CAst.v with
+      | Constrexpr.CProdN (bs, c) ->
+        let dom b =
+          match b with
+          | Constrexpr.CLocalAssum (xs, _, _, d) when is_sort d ->
+            Some (List.length xs)
+          | _ -> None
+        in
+        List.fold_left
+          (fun acc b -> Option.bind acc (fun n -> Option.map (( + ) n) (dom b)))
+          (arity c) bs
+      | Constrexpr.CNotation (_, (_, "_ → _"), ([ d ; c ], _, _, _))
+        when is_sort d ->
+        Option.map succ (arity c)
+      | _ -> None
+  in
+  let param (ty : Constrexpr.constr_expr) =
+    match arity ty with
+    | Some n -> mkAppC (const C.Jdg.rp_term, [ nat n ])
+    | None when Constrexpr_ops.occur_var_constr_expr sort ty ->
       Log.error ?loc:ty.CAst.loc
         "A parameter type cannot mention the sort %s." (Names.Id.to_string sort)
-    | _ -> mkAppC (const C.Jdg.rp_param, [ ty ])
+    | None -> mkAppC (const C.Jdg.rp_param, [ ty ])
   in
   let params bs =
     bs |> List.concat_map @@ fun b ->
