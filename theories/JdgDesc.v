@@ -147,12 +147,11 @@ Section HOAS.
   Definition hmvar (k : mvar) n : hterm_n n :=
     hmvar_aux k n [].
 
-  (* For now not supporting binders *)
-  Definition harg (a : arg_ty) :=
+  Fixpoint harg (a : arg_ty) :=
     match a with
     | AT_base b => eval_base b
     | AT_term => hterm
-    | AT_bind a => (* harg a *) False
+    | AT_bind a => hterm → harg a
     end.
 
   Fixpoint curry (l : list arg_ty) :=
@@ -161,11 +160,22 @@ Section HOAS.
     | a :: l => harg a → curry l
     end.
 
-  Definition harg_inst s (a : arg_ty) : harg a → mexpr (Ka a) s :=
+  (* Variable [n] as [hterm]
+
+    It cannot actually live in any scope, so in most cases it's a dummy.
+
+  *)
+  Definition hvar n : hterm :=
+    λ s,
+      (if n <? s as b return (n <? s) = b → _
+      then λ e, M_var s n (proj1 (PeanoNat.Nat.ltb_lt _ _) e)
+      else λ _, M_mvar s 0 []) eq_refl.
+
+  Fixpoint harg_inst s (a : arg_ty) : harg a → mexpr (Ka a) s :=
     match a with
     | AT_base b => λ x, M_abase _ _ x
     | AT_term => λ t, M_aterm _ (t s)
-    | AT_bind a => False_rect _ (* λ x, M_abind _ (harg_inst a x) *)
+    | AT_bind a => λ b, M_abind _ (harg_inst _ a (b (hvar 0)))
     end.
 
   Fixpoint hctor_aux (l : list arg_ty) : ((∀ s, mexpr (Kal l) s) → hterm) → curry l :=
