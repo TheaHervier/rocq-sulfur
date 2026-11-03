@@ -393,6 +393,24 @@ Section ConcreteFacts.
 
   Context {CL : ConcreteSyntaxLaws CS}.
 
+  (** Well-formed meta expression
+
+    Meta-variables below [m], applied to no substitution (which [cinst] drops)
+
+  *)
+  Fixpoint wf_mexpr (m : nat) {k s} (e : mexpr k s) {struct e} : bool :=
+    match e with
+    | M_var _ _ _ => true
+    | M_ctor _ _ al => wf_mexpr m al
+    | M_al_nil _ => true
+    | M_al_cons _ a al => wf_mexpr m a && wf_mexpr m al
+    | M_abase _ _ _ => true
+    | M_aterm _ t => wf_mexpr m t
+    | M_abind _ a => wf_mexpr m a
+    | M_mvar s k σ =>
+      (k <? m) && (s =? 0) && match σ with [] => true | _ => false end
+    end.
+
   Lemma rf_cinst ι m k s (e : mexpr k s) :
     wf_mexpr m e = true →
     rfk creify k (cinst ι e) = inst (λ k _, creify (ι k)) e.
